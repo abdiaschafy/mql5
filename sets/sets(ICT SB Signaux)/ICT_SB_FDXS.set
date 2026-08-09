@@ -1,0 +1,10 @@
+InpUseOTE=false
+InpUseFVG=false
+InpUseEmaRetest=true
+InpRequireMSS=true
+InpTrailRunner=true
+InpUseTrendFilter=true
+InpUseSbWindows=true
+InpUseAccountEquity=false
+InpAccountSize=50000
+InpTradeDir=0

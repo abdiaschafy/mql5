@@ -1,0 +1,15 @@
+InpUseOTE=false
+InpUseFVG=false
+InpUseEmaRetest=true
+InpRequireMSS=true
+InpUseTrendFilter=true
+InpUseSbWindows=true
+InpTradeDir=0
+InpTp1R=2.5
+InpFinalR=6.0
+InpTrailR=2.5
+InpSlBufferTicks=4
+InpMinDispTicks=20
+InpTp1Percent=30
+InpUseAccountEquity=false
+InpAccountSize=50000

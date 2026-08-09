@@ -1,67 +1,77 @@
-# Spécification cible des entrées et sorties
+# Spécification de référence des entrées et sorties
 
 - Date de mise à jour : 9 août 2026
-- Révision de référence : `9178b72`
-- Composants concernés : `ICT_SilverBullet_Strategy.mq5` et `ICT_SilverBullet_Signals.mq5`
-- Statut : logique fonctionnelle souhaitée, pas encore entièrement implémentée dans le code
+- Révision historique citée : `9178b72`
+- Composants : `ICT_SilverBullet_Core.mqh`, `ICT_SilverBullet_Strategy.mq5` et `ICT_SilverBullet_Signals.mq5`
+- Statut : logique implémentée et couverte par les tests automatisés décrits en
+  section 14 ; performance et comportement broker réel restant à valider
 
-## 1. Règles générales
+## 1. Objet et séquence générale
 
-La stratégie recherche une continuation après une prise de liquidité, une confirmation structurelle et un retracement dans la bonne moitié du dealing range.
+La stratégie recherche une continuation après une purge de liquidité, une
+confirmation de structure interne et un retracement dans la bonne moitié du
+dealing range.
 
 ```text
-Biais D1 et stacking complets
+Biais D1 + stacking D1/H1/M5/M1 complets
     ↓
-Purge de la liquidité opposée au futur trade
+Purge clôturée de la liquidité opposée au futur trade
     ↓
-Balayage/cassure du swing dans le sens du futur trade
+Formation et confirmation d'une structure interne post-purge
     ↓
-Déplacement + MSS + FVG directionnelle
+Balayage de la cible externe dans le sens du futur trade
     ↓
-Construction du dealing range et de sa zone discount/premium
+MSS sur la structure interne + déplacement + FVG directionnelle
     ↓
-Retracement dans cette zone pendant une Killzone ou une Macro
+Construction du dealing range
     ↓
-Déclencheur FVG, OTE ou retest EMA
+Retracement et déclencheur dans la même fenêtre New York
     ↓
-Entrée
+Ordre au marché et réconciliation du fill réel
 ```
 
 Principes obligatoires :
 
-- toutes les décisions sont prises à partir de bougies clôturées ;
-- les événements doivent respecter leur ordre chronologique ;
-- un MSS antérieur à la purge ne peut pas valider le setup ;
-- une ancienne liquidité déjà consommée ne peut pas recréer indéfiniment le même setup ;
-- aucun stack complet signifie aucun trade et aucun signal ;
-- le retracement final doit réellement entrer dans la zone autorisée ;
-- l'entrée doit se produire pendant une fenêtre horaire autorisée.
+- seules des bougies clôturées alimentent les décisions ;
+- les événements sont horodatés et respectent l'ordre défini ci-dessus ;
+- aucun MSS ou pivot interne antérieur à la purge ne peut valider un setup ;
+- une liquidité balayée est consommée et ne peut pas recréer indéfiniment le
+  même setup ;
+- un stack incomplet ou neutre interdit le trade et le signal ;
+- la FVG est obligatoire, quel que soit le déclencheur final ;
+- la purge, les confirmations et l'entrée appartiennent à une même instance de
+  fenêtre horaire autorisée ;
+- le prix doit réellement traiter la zone choisie ;
+- l'EA et l'indicateur doivent utiliser le même moteur de décision partagé.
 
-## 2. Biais directionnel et stacking
+Les swings externes servant de liquidité peuvent naturellement avoir été formés
+avant la fenêtre. La contrainte « même fenêtre » commence avec la purge.
 
-### 2.1 Biais haussier
+## 2. Biais et stacking obligatoires
 
-Le biais devient haussier uniquement lorsque la dernière bougie D1 clôturée respecte :
+### 2.1 LONG
+
+Le biais est haussier uniquement lorsque la dernière bougie D1 clôturée vérifie :
 
 ```text
 Close D1 > EMA10 D1 > EMA20 D1
 ```
 
-Le stacking de confirmation doit également être complètement aligné dans le sens haussier sur les timeframes de confirmation retenus.
+H1, M5 et M1 doivent simultanément vérifier le même stacking haussier.
 
-### 2.2 Biais baissier
+### 2.2 SHORT
 
-Le biais devient baissier uniquement lorsque la dernière bougie D1 clôturée respecte :
+Le biais est baissier uniquement lorsque la dernière bougie D1 clôturée vérifie :
 
 ```text
 Close D1 < EMA10 D1 < EMA20 D1
 ```
 
-Le stacking de confirmation doit également être complètement aligné dans le sens baissier sur les timeframes de confirmation retenus.
+H1, M5 et M1 doivent simultanément vérifier le même stacking baissier.
 
-### 2.3 Absence de stack
+### 2.3 Neutralité
 
-Si le D1 ou l'un des timeframes obligatoires ne possède pas un stack complet :
+Si D1, H1, M5 ou M1 n'est pas complètement aligné :
 
 ```text
 Biais = NEUTRE
@@ -69,465 +79,513 @@ Trade = INTERDIT
 Signal = INTERDIT
 ```
 
-Le système ne doit pas conserver un ancien biais haussier ou baissier pendant une configuration EMA neutre.
+Un ancien biais n'est jamais conservé pendant un empilement EMA neutre. Les
+périodes de référence sont obligatoirement EMA10 et EMA20.
 
-Interprétation retenue pour le document :
+## 3. Références structurelles
 
-- D1 définit le biais directeur ;
-- H1, M5 et M1 restent les confirmations de stacking prévues par la solution actuelle ;
-- si l'un de ces timeframes doit devenir facultatif, cela devra être défini explicitement dans les inputs.
+Avant une purge, le système mémorise un swing high externe et un swing low
+externe confirmés, avec leurs prix et timestamps. Ces deux références restent
+figées pendant la vie du setup.
 
-## 3. Préparation d'un achat
+Après la purge, une seconde structure, interne à la nouvelle jambe, doit se
+former puis être confirmée :
 
-Un setup LONG n'est valide que si les événements suivants apparaissent dans cet ordre.
+- LONG : un swing high interne ;
+- SHORT : un swing low interne.
 
-### Étape 1 — Biais haussier complet
+Règle déterministe retenue pour les deux composants : un swing interne est un
+pivot strict confirmé par deux bougies de chaque côté. La bougie source du pivot
+doit être strictement postérieure à la bougie de purge. Le premier pivot interne
+éligible est verrouillé et ne peut plus être remplacé au milieu de la séquence.
 
-- `Close D1 > EMA10 D1 > EMA20 D1` ;
-- stacking haussier complet sur les timeframes de confirmation ;
+Le niveau externe balayé et le niveau interne cassé par le MSS sont donc deux
+niveaux distincts.
+
+À chaque clôture, le détecteur 2/2 évalue indépendamment un pivot high et un
+pivot low. Un pivot confirmé sur la bougie courante peut déjà servir de structure
+interne à un setup antérieur, mais il ne devient une nouvelle référence externe
+qu'après le traitement complet de cette bougie. Il ne peut donc pas réécrire la
+liquidité, la purge ou la cible évaluées sur sa propre bougie de confirmation.
+Si une même bougie « outside » satisfait simultanément les critères stricts du
+pivot high et du pivot low, les deux événements sont rejetés comme ambigus.
+
+## 4. Préparation d'un achat
+
+### Étape 1 — Admission
+
+Les conditions partagées par l'EA et l'indicateur sont :
+
+- stacking D1/H1/M5/M1 haussier complet ;
 - direction LONG autorisée ;
-- verrou journalier inactif ;
-- limite de setups et de positions non atteinte.
+- swing low et swing high externes disponibles et non consommés ;
+- clôture de la bougie dans une fenêtre autorisée.
 
-### Étape 2 — Verrouillage des swings de référence
+L'EA exige en plus un verrou journalier inactif et le respect des limites de
+positions, de capacité et de risque du compte. L'indicateur ne connaît pas ces
+états de compte : son `InpMaxPositions` plafonne uniquement ses setups candidats.
 
-Le système identifie et mémorise :
+### Étape 2 — Purge clôturée du swing low
 
-- un swing low de référence ;
-- un swing high de référence ;
-- leurs timestamps et leurs prix.
-
-Ces références ne doivent pas être remplacées au milieu de la séquence.
-
-### Étape 3 — Purge du swing low
-
-Le prix doit d'abord prendre la liquidité située sous le swing low de référence :
+La purge LONG exige à la fois une mèche stricte sous le swing low et une clôture
+de réintégration stricte au-dessus de ce niveau :
 
 ```text
-Low < Swing Low de référence
+Low < SwingLowExterne
+AND Close > SwingLowExterne
 ```
 
-Ce point bas purgé devient l'origine de la jambe haussière et le point Fibonacci `0`.
+Une clôture exactement égale au swing low n'est pas une réintégration. Le plus
+bas de cette bougie devient Fibonacci `0` et reste verrouillé.
 
-La purge du swing low doit obligatoirement précéder le balayage ou la cassure du swing high.
+### Étape 3 — Structure interne post-purge
 
-### Étape 4 — Balayage du swing high et MSS haussier
+Un swing high interne doit ensuite se former et être confirmé. Sa bougie source,
+son prix, sa bougie de confirmation et leurs timestamps sont mémorisés.
 
-Après la purge du swing low, le prix doit dépasser l'ancien swing high :
+### Étape 4 — Balayage de la cible externe
+
+Après confirmation du swing interne, une bougie clôturée doit avoir traité au-
+dessus du swing high externe :
 
 ```text
-High de la bougie fermée > Swing High de référence
+High > SwingHighExterne
 ```
 
-La confirmation structurelle haussière exige un MSS formé après la purge. La règle de confirmation recommandée est :
+La mèche suffit pour ce balayage de liquidité externe. Le swing high externe est
+consommé dès son premier balayage, qu'une entrée soit finalement produite ou non.
+
+### Étape 5 — MSS interne, déplacement et FVG
+
+Le MSS LONG est une nouvelle clôture qui traverse le swing high interne :
 
 ```text
-Close de la bougie fermée > niveau structurel du swing high
+ClosePrecedente <= SwingHighInterne
+AND Close > SwingHighInterne
 ```
 
-Un simple ancien `g_mssBias` haussier ne doit pas suffire.
+Le simple dépassement par une mèche ne suffit pas. Le vrai croisement empêche de
+réutiliser une clôture déjà installée au-dessus du niveau.
 
-### Étape 5 — Déplacement haussier et création d'une FVG
+Le balayage externe et le MSS peuvent être confirmés sur la même bougie fermée
+si le pivot interne était déjà confirmé : le high de la bougie traite la cible,
+puis la clôture finale confirme le MSS. Ils ne peuvent jamais être réutilisés
+depuis la bougie de purge.
 
-La cassure doit produire :
+La jambe doit aussi produire :
 
-- un déplacement haussier mesurable ;
-- une FVG haussière créée après la purge ;
-- une FVG orientée dans le sens de la jambe ;
-- une zone exploitable située dans la partie discount du dealing range.
+- un déplacement minimal mesurable ;
+- une FVG haussière formée entièrement après la purge ;
+- une Consequent Encroachment de FVG située en discount.
 
-La FVG est un contexte obligatoire du setup, même si le déclencheur final retenu est un OTE ou un retest EMA.
+Une FVG candidate formée après la purge peut être mémorisée avant le MSS. Elle ne
+devient la FVG de contexte qu'une fois le balayage externe, le MSS et le
+déplacement tous confirmés.
 
-### Étape 6 — Construction du dealing range
-
-Pour un LONG :
-
-- Fibonacci `0` = point bas de la purge du swing low ;
-- Fibonacci `1` = point haut atteint par la jambe de déplacement ;
-- équilibre `EQ` = 50 % du range ;
-- discount = moitié basse, entre Fibonacci `0` et `EQ`.
+### Étape 6 — Dealing range LONG
 
 ```text
+Fib0  = plus bas de la bougie de purge
+Fib1  = plus haut atteint par la jambe de déplacement
 Range = Fib1 - Fib0
-EQ = Fib0 + 0,50 × Range
+EQ    = Fib0 + 0,50 × Range
 Discount = [Fib0 ; EQ]
 ```
 
-Le terminus Fibonacci `1` ne doit être figé qu'une fois la jambe de déplacement définie.
+Fib0 reste fixe. Fib1 suit l'extrême de la jambe, puis est figé lorsque
+balayage, MSS, déplacement et FVG de contexte sont confirmés.
 
-### Étape 7 — Retracement en discount
+### Étape 7 — Retracement et entrée LONG
 
-Après la création de la jambe, le prix doit retracer dans la zone discount.
+Sur une bougie ultérieure, dans la même instance de fenêtre, le prix doit
+retracer en discount et produire un rejet haussier. Le déclencheur peut être :
 
-L'entrée peut utiliser :
+- le toucher réel de la CE de la FVG haussière ;
+- l'intersection réelle du range de la bougie avec la zone OTE inclusive 62–79 % ;
+- un retest EMA10 dont le niveau est lui-même en discount.
 
-- une FVG haussière située en discount ;
-- une zone OTE comprise dans la partie discount ;
-- un retest EMA situé lui aussi en discount.
+La clôture de confirmation et le prix encore exécutable doivent être en
+discount. Un EMA en premium, une portion interdite de FVG ou un niveau OTE non
+traité ne peuvent pas devenir un prix théorique d'entrée.
 
-Un contact avec l'EMA en premium ne constitue pas une entrée LONG valide.
-
-### Étape 8 — Filtre horaire
-
-Le retracement et le déclenchement final doivent survenir pendant une Killzone ou une Macro autorisée. La formation initiale du setup peut avoir commencé avant la fenêtre, mais aucune entrée ne doit être produite hors fenêtre.
-
-### Étape 9 — Déclenchement de l'achat
-
-L'achat devient autorisé seulement lorsque toutes les conditions précédentes sont encore valides et que le prix a réellement traité la zone d'entrée.
-
-```text
-Biais haussier complet
-AND purge du swing low
-AND prise du swing high après la purge
-AND déplacement haussier
-AND MSS haussier postérieur à la purge
-AND FVG haussière en discount
-AND retracement en discount
-AND Killzone ou Macro active
-AND filtre de risque valide
-= LONG autorisé
-```
-
-## 4. Préparation d'une vente
+## 5. Préparation d'une vente
 
 La logique SHORT est le miroir exact de la logique LONG.
 
-### Étape 1 — Biais baissier complet
+### Étape 1 — Admission
 
-- `Close D1 < EMA10 D1 < EMA20 D1` ;
-- stacking baissier complet sur les timeframes de confirmation ;
+- stacking D1/H1/M5/M1 baissier complet ;
 - direction SHORT autorisée ;
-- limites de risque et de positions respectées.
+- références externes présentes et non consommées ;
+- clôture de la bougie dans une fenêtre autorisée.
 
-### Étape 2 — Purge du swing high
+Les contraintes opérationnelles ont la même portée que pour un LONG : verrou,
+positions et risque sont contrôlés par l'EA, tandis que l'indicateur ne limite que
+ses setups candidats.
 
-Le prix doit d'abord prendre la liquidité située au-dessus du swing high de référence :
+### Étape 2 — Purge clôturée du swing high
 
 ```text
-High > Swing High de référence
+High > SwingHighExterne
+AND Close < SwingHighExterne
 ```
 
-Ce point haut devient l'origine de la jambe baissière et le point Fibonacci `0`.
+Une clôture exactement égale est refusée. Le plus haut de cette bougie devient
+Fibonacci `0` et reste verrouillé.
 
-### Étape 3 — Balayage du swing low et MSS baissier
+### Étape 3 — Structure interne post-purge
 
-Après la purge du swing high, le prix doit descendre sous le swing low de référence :
+Un swing low interne strict, formé après la purge et confirmé par deux bougies de
+chaque côté, est mémorisé sans remplacement ultérieur.
+
+### Étape 4 — Balayage de la cible externe
+
+Après confirmation du swing interne :
 
 ```text
-Low de la bougie fermée < Swing Low de référence
+Low < SwingLowExterne
 ```
 
-Le MSS baissier doit être nouveau et postérieur à la purge. La confirmation recommandée est :
+Le swing low externe est alors consommé.
+
+### Étape 5 — MSS interne, déplacement et FVG
 
 ```text
-Close de la bougie fermée < niveau structurel du swing low
+ClosePrecedente >= SwingLowInterne
+AND Close < SwingLowInterne
 ```
 
-### Étape 4 — Déplacement baissier et création d'une FVG
+Le MSS est postérieur à la purge et utilise la structure interne, pas le swing
+low externe. Le balayage externe et le MSS peuvent appartenir à la même bougie
+fermée si le pivot interne était déjà confirmé.
 
-La cassure doit produire :
+La jambe doit produire un déplacement minimal, une FVG baissière post-purge et
+une CE située en premium.
 
-- un déplacement baissier mesurable ;
-- une FVG baissière créée après la purge ;
-- des bornes FVG correctement ordonnées ;
-- une zone exploitable dans la partie premium du dealing range.
-
-### Étape 5 — Construction du dealing range
-
-Pour un SHORT :
-
-- Fibonacci `0` = point haut de la purge du swing high ;
-- Fibonacci `1` = point bas atteint par la jambe de déplacement ;
-- équilibre `EQ` = milieu du range ;
-- premium = moitié haute des prix, entre `EQ` et le point haut Fibonacci `0`.
+### Étape 6 — Dealing range SHORT
 
 ```text
+Fib0  = plus haut de la bougie de purge
+Fib1  = plus bas atteint par la jambe de déplacement
 Range = Fib0 - Fib1
-EQ = Fib1 + 0,50 × Range
+EQ    = Fib1 + 0,50 × Range
 Premium = [EQ ; Fib0]
 ```
 
-### Étape 6 — Retracement en premium
+### Étape 7 — Retracement et entrée SHORT
 
-L'entrée SHORT peut utiliser :
+Sur une bougie ultérieure et dans la même instance de fenêtre, un rejet baissier
+doit réellement traiter l'un des déclencheurs suivants :
 
-- une FVG baissière située en premium ;
-- une zone OTE située en premium ;
-- un retest EMA situé en premium.
+- CE de la FVG baissière ;
+- intersection du range de la bougie avec la zone OTE inclusive 62–79 % ;
+- EMA10 située en premium.
 
-Un contact avec l'EMA en discount ne constitue pas une entrée SHORT valide.
+La clôture et le prix exécutable doivent rester en premium.
 
-### Étape 7 — Déclenchement de la vente
+## 6. Fibonacci, OTE et FVG
 
-```text
-Biais baissier complet
-AND purge du swing high
-AND prise du swing low après la purge
-AND déplacement baissier
-AND MSS baissier postérieur à la purge
-AND FVG baissière en premium
-AND retracement en premium
-AND Killzone ou Macro active
-AND filtre de risque valide
-= SHORT autorisé
-```
-
-## 5. Règles Fibonacci, OTE et FVG
-
-### 5.1 Point zéro
-
-Le point Fibonacci `0` représente obligatoirement l'origine de la jambe de déplacement :
-
-- LONG : point bas obtenu lors de la purge du swing low ;
-- SHORT : point haut obtenu lors de la purge du swing high.
-
-Ce point est verrouillé pendant toute la vie du setup.
-
-### 5.2 Équilibre
-
-Le niveau 50 % sépare le dealing range :
-
-- LONG autorisé seulement sous ou au niveau de l'EQ ;
-- SHORT autorisé seulement au-dessus ou au niveau de l'EQ.
-
-### 5.3 OTE
-
-Pour un LONG, l'OTE correspond à un retracement de 62 % à 79 % depuis le sommet de la jambe vers son origine :
+### 6.1 OTE
 
 ```text
-OTE Long = [Fib1 - 0,79 × Range ; Fib1 - 0,62 × Range]
-```
-
-Pour un SHORT, l'OTE correspond à un retracement de 62 % à 79 % depuis le bas de la jambe vers son origine :
-
-```text
+OTE Long  = [Fib1 - 0,79 × Range ; Fib1 - 0,62 × Range]
 OTE Short = [Fib1 + 0,62 × Range ; Fib1 + 0,79 × Range]
 ```
 
-Les deux bornes 62 % et 79 % doivent être réellement contrôlées.
+Les deux bornes sont inclusives et réellement contrôlées. Le niveau indicatif
+70,5 % ne remplace jamais une zone traitée ni le fill réel.
 
-### 5.4 FVG obligatoire
+### 6.2 Définition de la FVG
 
-Une FVG valide doit :
-
-1. être créée après la purge initiale ;
-2. être produite par la jambe de déplacement ;
-3. être orientée dans le sens du futur trade ;
-4. se situer dans la moitié autorisée du dealing range ;
-5. ne pas avoir été invalidée avant le retracement ;
-6. être réellement touchée si elle sert de déclencheur d'entrée.
-
-Pour éviter une interprétation ambiguë de « FVG dans la zone », la partie de FVG utilisée comme prix d'entrée doit être entièrement dans la moitié autorisée. Une FVG traversant l'EQ ne permet pas d'entrer dans sa portion interdite.
-
-## 6. Filtre horaire
-
-Toutes les heures suivantes sont exprimées en heure de New York et doivent utiliser le DST applicable à la date de la bougie.
-
-### 6.1 Fenêtres Londres et New York
-
-| Session | Killzone | Macro associée | Fenêtre d'entrée résultante |
-|---|---:|---:|---:|
-| Londres | 03:00–04:00 | 03:45–04:15 | 03:00–04:15 |
-| New York AM | 10:00–11:00 | 10:45–11:15 | 10:00–11:15 |
-| New York PM | 14:00–15:00 | 14:45–15:15 | 14:00–15:15 |
-
-### 6.2 Fenêtres asiatiques
-
-Les deux fenêtres supplémentaires sont :
-
-- 19:00–21:00 New York ;
-- 21:00–23:59 New York.
-
-Elles couvrent la phase asiatique du soir jusqu'à la fin de la journée New York.
-
-### 6.3 Règle d'admission
+Sur trois bougies clôturées, `n` étant la plus récente :
 
 ```text
-Entrée autorisée =
-03:00–04:15
-OR 10:00–11:15
-OR 14:00–15:15
-OR 19:00–21:00
-OR 21:00–23:59
+FVG haussière : Low[n]  > High[n-2]
+FVG baissière : High[n] < Low[n-2]
 ```
 
-La condition horaire s'applique au retracement et au déclenchement d'entrée, pas nécessairement à la purge initiale ou au déplacement.
+Les bornes sont toujours ordonnées `FvgLow <= FvgHigh`, la largeur minimale est
+appliquée et les trois bougies sont postérieures à la purge.
 
-## 7. Machine d'état attendue
+### 6.3 Consequent Encroachment
 
-La logique doit être implémentée comme une séquence d'états afin d'interdire les événements hors ordre.
+```text
+CE = (FvgLow + FvgHigh) / 2
+```
+
+Une FVG est dans la bonne moitié si :
+
+```text
+LONG  : Fib0 <= CE <= EQ
+SHORT : EQ <= CE <= Fib0
+```
+
+La FVG entière n'a pas besoin d'être contenue dans la moitié autorisée. Elle peut
+traverser EQ si sa CE reste du bon côté. Si la FVG sert de déclencheur, le range
+de la bougie doit réellement toucher sa CE ; toucher seulement la portion située
+du mauvais côté d'EQ ne suffit pas.
+
+Après promotion en contexte, la règle d'invalidation reste :
+
+- LONG : clôture sous la borne basse de la FVG ;
+- SHORT : clôture au-dessus de la borne haute de la FVG.
+
+## 7. Fenêtres obligatoires
+
+Toutes les heures sont celles de New York. La conversion applique le DST valable
+à la date de clôture de chaque bougie. Les intervalles sont semi-ouverts : début
+inclus, fin exclue.
+
+| Instance | Fenêtre autorisée |
+|---|---:|
+| London Killzone | `[02:00,05:00)` |
+| New York Killzone | `[07:00,10:00)` |
+| Asian Killzone | `[19:00,22:00)` |
+
+Ces trois fenêtres sont séparées et totalisent 540 minutes par jour New York.
+05:00, 10:00 et 22:00 sont refusées.
+
+La purge ne peut créer un setup qu'à l'intérieur d'une de ces fenêtres. Chaque
+setup mémorise `date New York + identifiant de fenêtre`. Tous ses événements
+suivants doivent conserver exactement cet identifiant. Une sortie de fenêtre,
+un passage au jour suivant ou un trou de cotations menant directement à une
+autre fenêtre invalide immédiatement le setup. Aucun report à la prochaine
+Killzone n'est autorisé.
+
+`InpUseSbWindows` peut être conservé dans les fichiers pour compatibilité avec
+les anciens presets, mais la norme exige sa valeur `true`; une valeur `false`
+doit faire échouer l'initialisation au lieu de désactiver cette règle.
+De même, `InpAutoDST` doit rester à `true` : un offset New York manuel fixe est
+incompatible avec l'exigence d'appliquer EST/EDT à la date de chaque bougie.
+
+## 8. Machine d'état normative
 
 ```text
 WAIT_STACK
-    ↓ stack complet
+    ↓ alignement complet
 WAIT_REFERENCE_SWINGS
-    ↓ swings verrouillés
+    ↓ références externes verrouillées
 WAIT_LIQUIDITY_PURGE
-    ↓ purge du swing opposé
-WAIT_DIRECTIONAL_BREAK
-    ↓ prise du swing dans le sens du trade
-WAIT_DISPLACEMENT_MSS_FVG
-    ↓ déplacement + nouveau MSS + FVG valide
+    ↓ mèche + clôture de réintégration, dans une fenêtre
+WAIT_INTERNAL_STRUCTURE
+    ↓ pivot interne post-purge confirmé
+WAIT_TARGET_SWEEP
+    ↓ cible externe balayée et consommée
+WAIT_INTERNAL_MSS
+    ↓ vrai croisement clôturé du pivot interne
+WAIT_DISPLACEMENT_FVG_CE
+    ↓ déplacement + FVG obligatoire dont CE est correcte
 WAIT_RETRACEMENT_WINDOW
-    ↓ discount/premium + fenêtre autorisée
+    ↓ déclencheur réellement traité dans la même fenêtre
 READY_TO_ENTER
-    ↓ ordre confirmé
+    ↓ ordre marché accepté et fill réconcilié
 POSITION_MANAGEMENT
 ```
 
-Chaque setup doit mémoriser au minimum :
+Le moteur peut effectuer plusieurs transitions compatibles sur une même bougie
+fermée, mais il ne fabrique jamais un ordre temporel impossible. En particulier,
+le pivot interne doit déjà être confirmé avant le balayage externe ; le balayage
+et la clôture MSS peuvent ensuite être constatés sur la même bougie.
 
-- direction ;
-- prix et heure des swings de référence ;
-- prix et heure de la purge ;
-- origine Fibonacci `0` ;
-- terminus Fibonacci `1` ;
-- niveau EQ ;
-- prix et heure du MSS ;
-- bornes et heure de la FVG ;
-- état de consommation de la liquidité ;
-- date d'expiration ;
-- identifiant et ticket réel après exécution.
+Chaque setup mémorise au minimum :
 
-## 8. Invalidation d'un setup
+- direction et phase ;
+- swings externes, prix, timestamps et clés de consommation ;
+- purge, extrême, clôture, Fib0 et instance de fenêtre ;
+- pivot interne, source et confirmation ;
+- balayage externe ;
+- MSS interne et clôture précédente ;
+- extrême de jambe, Fib1 et EQ ;
+- FVG candidate, FVG de contexte, CE et timestamps ;
+- expiration, déclencheur et décision d'entrée ;
+- dans l'EA seulement : ticket, identifiant de position, fill et volume réels.
 
-Le setup doit être annulé lorsque :
+## 9. Invalidations et consommation
 
-- le stacking complet disparaît ;
-- le biais D1 devient neutre ou opposé ;
-- le prix invalide l'origine Fibonacci `0` selon la règle de clôture retenue ;
-- le MSS apparaît avant la purge ou dans le mauvais sens ;
-- la FVG obligatoire est invalidée ;
-- le terminus ou les swings de référence sont remplacés de manière incohérente ;
-- la liquidité du setup a déjà été consommée ;
-- le setup dépasse sa durée de vie maximale ;
-- les limites journalières ou d'exposition interdisent l'entrée.
+Le setup est invalidé lorsque :
 
-La fermeture d'une fenêtre horaire interdit l'entrée. La conservation éventuelle du setup jusqu'à une fenêtre suivante devra être définie explicitement avant l'implémentation.
+- le stacking complet disparaît ou s'oppose à la direction ;
+- l'instance de fenêtre change ou devient absente ;
+- son âge dépasse la limite configurée ;
+- une clôture LONG passe strictement sous Fib0, ou une clôture SHORT strictement
+  au-dessus de Fib0 ;
+- la cible externe est balayée avant la confirmation d'une structure interne ;
+- la structure interne est cassée avant le balayage externe ;
+- un pivot antérieur à la purge est présenté comme structure interne ;
+- la FVG obligatoire de contexte est invalidée ;
+- dans l'EA, le verrou journalier devient actif.
 
-## 9. Déclenchement et prix d'exécution
+Une FVG encore candidate peut être remplacée si elle est invalidée avant sa
+promotion. Une FVG de contexte déjà promue invalide le setup selon ses bornes
+distales.
 
-La logique fonctionnelle impose que le prix ait réellement traité la zone FVG, OTE ou EMA autorisée.
+Une limite de positions, un risque non admissible ou un prix marché devenu
+inexécutable ne constituent pas, à eux seuls, une invalidation d'un setup déjà en
+attente. Lorsqu'une décision d'entrée ne peut pas être exécutée, l'EA revient en
+`WAIT_RETRACEMENT` et attend un nouveau retracement valide dans la même fenêtre.
+À l'étape de création, en revanche, une capacité insuffisante empêche le setup de
+naître et la liquidité déjà balayée reste consommée.
 
-Deux modes d'exécution restent possibles :
+Exception de sûreté : lorsqu'une requête d'ouverture a été envoyée mais que son
+résultat broker n'est pas confirmé, l'EA conserve une sentinelle, bloque cette
+capacité et recherche le deal, l'ordre ou la position réels. Toute exécution
+tardive détectée est fermée de sécurité ; la décision n'est jamais réarmée. Les
+transactions, l'historique et les ordres actifs sont consultés pendant
+`InpBrokerReconcileSeconds` (120 secondes par défaut). Après ce délai, une
+requête sans ordre actif ni preuve d'exécution est considérée terminée ; la
+liquidité reste néanmoins consommée.
 
-1. ordre limite placé dans la zone ;
-2. ordre au marché après une bougie de confirmation clôturée dans la zone.
+Les mèches qui prennent une liquidité doivent être enregistrées même lorsque la
+réintégration, le stack, le risque, la fenêtre ou la capacité empêchent la
+création d'un setup. Cela empêche une bougie ultérieure de réutiliser un niveau
+déjà traité comme une nouvelle purge.
 
-Le mode doit devenir un input explicite. Dans les deux cas :
+## 10. Déclenchement, risque et exécution
 
-- le volume doit être calculé depuis le prix réellement exécutable ;
-- le fill réel doit être contrôlé ;
-- SL, R, TP1 et objectifs doivent être calculés ou réconciliés depuis le fill ;
-- aucun prix théorique non traité ne doit être enregistré comme prix d'entrée.
+Le seul mode d'entrée retenu est un ordre au marché au premier tick suivant la
+clôture de la bougie de confirmation. Aucun ordre limite n'est prévu par cette
+révision.
 
-## 10. Logique de sortie provisoire
+Avant l'envoi :
 
-La modification reçue définit précisément les entrées, mais ne change pas explicitement les règles de sortie. Jusqu'à confirmation contraire, la sortie cible reste provisoirement :
+- la zone FVG/OTE/EMA doit avoir été réellement traitée ;
+- la clôture et le prix marché courant doivent être dans la moitié autorisée ;
+- le timestamp du tick exécutable doit encore appartenir à l'instance de fenêtre
+  mémorisée par le setup ;
+- le volume est calculé depuis le prix réellement exécutable et le SL
+  structurel ;
+- les limites de risque et de positions sont revérifiées.
 
-- SL structurel au-delà de l'origine Fibonacci `0`, avec buffer ;
-- sortie partielle à TP1 ;
-- passage du reliquat à break-even après TP1 confirmé ;
-- runner vers le TP final ou trailing ;
-- fermeture et verrouillage selon les limites de risque journalières.
+Après l'envoi :
 
-Les valeurs actuellement documentées pour DE30/XAUUSD sont :
+- le retcode est contrôlé ;
+- `PLACED`, `TIMEOUT`, `LOCKED` et `DONE_PARTIAL` sont réconciliés avant toute
+  nouvelle requête portant sur la même entrée ou la même sortie ;
+- tout reliquat actif d'une entrée partiellement remplie est annulé et son
+  annulation réconciliée avant la fermeture de sécurité ;
+- les modifications SL/TP sont sérialisées et leur effet est relu sur la
+  position avant d'armer break-even ou trailing ;
+- prix et volume sont lus depuis le deal ou la position ;
+- R, TP1, TP final et risque réel sont réconciliés depuis le fill ;
+- si le fill ou les protections ne sont pas sûrs, l'EA ferme la position de
+  sécurité ;
+- aucun prix de clôture théorique n'est conservé comme prix d'exécution.
 
-- TP1 : 2,5 R ;
-- TP1 partiel : 30 % ;
-- objectif final : 6 R ;
-- trailing runner : 2,5 R.
+## 11. Sorties recommandées
 
-Ces paramètres ne sont pas considérés comme définitivement validés par la présente spécification. La gestion de sortie doit fonctionner à chaque tick ou être protégée par des ordres broker, et non attendre la bougie suivante.
+La logique d'entrée ne démontre pas à elle seule un ratio de sortie optimal. La
+baseline prudente recommandée pour les prochains backtests est :
 
-## 11. Différences avec le code actuel
+- SL structurel au-delà de Fib0 avec buffer ;
+- TP1 à 2 R ;
+- 50 % du volume fermé à TP1 ;
+- reliquat déplacé à break-even après confirmation du TP1 ;
+- TP final initial à 4 R ;
+- si le trailing est désactivé, maintien du TP final à 4 R ;
+- si le trailing est activé, retrait du TP final après TP1 puis trailing du
+  runner à 2 R depuis son extrême favorable ;
+- gestion évaluée à chaque tick et protections initiales placées chez le broker.
 
-| Sujet | Code actuel | Logique cible |
-|---|---|---|
-| Biais neutre | Conserve souvent le biais précédent | Aucun stack complet = aucun trade/signal |
-| Départ LONG | Crée le setup après prise du swing high | Purge d'abord le swing low, puis prise du swing high |
-| Départ SHORT | Crée le setup après prise du swing low | Purge d'abord le swing high, puis prise du swing low |
-| Chronologie MSS | Peut réutiliser un état MSS antérieur | MSS nouveau, horodaté après la purge |
-| FVG | Peut seulement servir d'armement/déclencheur | FVG directionnelle obligatoire dans la bonne moitié |
-| Retest EMA | Ne contrôle pas discount/premium | EMA valide seulement dans discount/premium |
-| OTE | Borne 79 % non appliquée | Zone complète 62–79 % obligatoire |
-| Fenêtres | Londres/NY seulement | Londres, NY et deux fenêtres asiatiques |
-| Fibonacci | Origine et terminus évolutifs selon le setup | Fib 0 verrouillé à la purge, Fib 1 au terminus |
-| Liquidité consommée | Peut être réutilisée | Consommation persistante par niveau/setup |
-| Exécution | Ordre marché au tick suivant depuis un prix théorique | Zone réellement traitée et fill réconcilié |
-| Sorties | TP1/BE/trailing seulement à la nouvelle bougie | Gestion intrabar ou protections broker |
-
-Le code ne doit donc pas être présenté comme conforme à cette spécification avant sa modification et sa validation.
+Cette baseline est préférable comme point de départ car elle matérialise assez
+tôt une partie du gain tout en conservant un runner significatif. Elle reste à
+valider séparément sur DE30 et XAUUSD par vrais ticks, coûts réalistes, IS/OOS et
+Monte-Carlo. Les anciens presets 2,5 R / 30 % / 6 R / 2,5 R restent des variantes
+historiques, pas une preuve d'optimalité.
 
 ## 12. Critères d'acceptation
 
-### Scénario LONG valide
+### LONG valide
 
 ```text
-Stack D1/confirmations haussier
-→ swing low purgé
-→ swing high pris après la purge
-→ déplacement haussier
-→ MSS haussier nouveau
-→ FVG haussière en discount
-→ retracement en discount pendant une fenêtre autorisée
-→ déclencheur valide
-→ achat
+Stack haussier complet dans D1/H1/M5/M1
+→ purge du swing low avec clôture de réintégration
+→ swing high interne formé et confirmé après la purge
+→ swing high externe balayé
+→ clôture MSS au-dessus du swing high interne
+→ déplacement et FVG haussière avec CE en discount
+→ retracement ultérieur réellement traité en discount
+→ toute la séquence depuis la purge dans la même fenêtre
+→ achat au marché puis fill réel réconcilié
 ```
 
-### Scénario SHORT valide
+### SHORT valide
 
 ```text
-Stack D1/confirmations baissier
-→ swing high purgé
-→ swing low pris après la purge
-→ déplacement baissier
-→ MSS baissier nouveau
-→ FVG baissière en premium
-→ retracement en premium pendant une fenêtre autorisée
-→ déclencheur valide
-→ vente
+Stack baissier complet dans D1/H1/M5/M1
+→ purge du swing high avec clôture de réintégration
+→ swing low interne formé et confirmé après la purge
+→ swing low externe balayé
+→ clôture MSS sous le swing low interne
+→ déplacement et FVG baissière avec CE en premium
+→ retracement ultérieur réellement traité en premium
+→ toute la séquence depuis la purge dans la même fenêtre
+→ vente au marché puis fill réel réconcilié
 ```
 
-### Scénarios obligatoirement rejetés
+### Rejets obligatoires
 
-- D1 ou confirmation sans stack complet ;
-- sweep high pour un LONG sans purge préalable du swing low ;
-- sweep low pour un SHORT sans purge préalable du swing high ;
-- MSS antérieur à la purge ;
-- FVG située dans la mauvaise moitié du range ;
-- retest EMA hors discount/premium ;
-- OTE au-delà de 79 % ou avant 62 % ;
-- retracement hors Killzone/Macro ;
-- réutilisation d'une liquidité déjà consommée ;
-- entrée calculée sur un prix que le marché n'a jamais traité ;
-- dépassement des limites de risque ou de positions.
+- stack incomplet sur l'un des quatre timeframes ;
+- simple mèche de purge sans clôture de réintégration ;
+- clôture de purge égale au swing ;
+- pivot interne source antérieur ou égal à la purge ;
+- cible externe balayée avant confirmation du pivot interne ;
+- MSS interne avant cible externe, par mèche seulement ou sans vrai croisement ;
+- FVG dont la CE est dans la mauvaise moitié ;
+- toucher de la FVG sans toucher sa CE lorsqu'elle sert de déclencheur ;
+- EMA hors discount/premium ;
+- OTE en dehors de 62–79 % ;
+- sortie de fenêtre ou tentative de report à la fenêtre suivante ;
+- réutilisation d'une liquidité consommée ;
+- prix théorique jamais traité ;
+- dépassement des limites de risque ou d'exposition.
 
-## 13. Points restant à confirmer
+## 13. Décisions de la révision du 9 août 2026
 
-La logique fournie permet de définir clairement la direction et la chronologie. Les décisions suivantes restent à fixer avant une implémentation sans ambiguïté :
+1. stacking obligatoire : D1 + H1 + M5 + M1, tous en EMA10/EMA20 ;
+2. purge : mèche stricte et clôture de réintégration stricte ;
+3. MSS : vrai croisement clôturé d'un pivot interne 2/2 formé post-purge ;
+4. cible externe et MSS interne : événements distincts, cible d'abord ;
+5. FVG : validation par sa CE, pas par l'intégralité de la zone ;
+6. entrée : uniquement au marché après bougie clôturée ;
+7. fenêtres séparées et obligatoires : `[02:00,05:00)`, `[07:00,10:00)` et
+   `[19:00,22:00)` New York ;
+8. conservation : aucun passage d'une fenêtre à une autre ;
+9. sorties : baseline 2 R / 50 % / 4 R / trailing 2 R, configurable et à
+   valider empiriquement ;
+10. horaire : clôture nominale de la bougie, conversion broker historique vers
+    UTC puis New York avec DST applicable à cette date.
 
-1. le stacking complet exige-t-il obligatoirement D1 + H1 + M5 + M1, ou seulement D1 avec certaines confirmations facultatives ? (exige obligatoirement D1+H1+M5+M1)
-2. la purge doit-elle être validée par un simple dépassement de mèche ou par une clôture de réintégration ? (Par une cloture)
-3. le MSS doit-il casser le swing high/low de référence ou une structure interne formée après la purge ? (Le MSS doit casser le SH/SL d'une structure interne formee apres la purge)
-4. une FVG est-elle valide lorsque seule sa Consequent Encroachment est en discount/premium, ou toute la zone doit-elle y être contenue ? (Oui ce FVG est valide)
-5. l'entrée finale doit-elle être une limite dans la zone ou un marché après confirmation ? (L'entree doit etre au marche)
-6. un setup formé hors fenêtre reste-t-il valide pour la prochaine Killzone/Macro ? (Non les conditions doivent etre respectees)
-7. les deux fenêtres asiatiques doivent-elles être séparées fonctionnellement ou traitées comme une plage continue 19:00–23:59 ? ( elles doivent etre separees)
-8. les règles de sortie provisoires doivent-elles être conservées telles quelles ? ( qu'est ce que tu me conseille?)
+## 14. Validation attendue
 
-Ces points n'empêchent pas de comprendre la logique générale, mais ils doivent être tranchés avant de modifier le moteur de trading.
+La suite automatisée doit couvrir au minimum :
+
+- les égalités et inégalités strictes du stack et de la purge ;
+- les pivots internes 2/2 et leur chronologie post-purge ;
+- la séparation cible externe / MSS interne et leur symétrie LONG/SHORT ;
+- les vrais croisements, l'idempotence et la consommation des liquidités ;
+- la CE sous, sur et au-delà de l'EQ, y compris une FVG traversant l'EQ ;
+- le toucher réel de la CE, les bornes OTE et le retest EMA ;
+- exactement 540 minutes quotidiennes admises ;
+- les bornes 02:00/05:00, 07:00/10:00 et 19:00/22:00 ;
+- la transition DST US et la conversion historique du broker ;
+- l'invalidation lors d'un changement d'instance de fenêtre ou d'un trou de
+  cotations ;
+- la parité de l'EA et de l'indicateur avec le moteur partagé ;
+- la réconciliation d'une réponse broker incertaine et d'un fill TP1 partiel ;
+- la compilation réelle des deux fichiers MQL5 sans erreur ni avertissement.
+
+Ces tests empêchent les régressions logiques et syntaxiques. Ils ne remplacent
+pas une campagne Strategy Tester en vrais ticks, des essais de redémarrage ni la
+validation des fills, du slippage et des clôtures partielles chez le broker.
 
 ## Conclusion
 
-La logique cible est comprise comme suit :
-
-- **LONG** : biais et stacking haussiers, purge préalable du swing low, prise du swing high, déplacement, nouveau MSS, FVG haussière en discount, puis retracement en discount pendant une Killzone ou Macro ;
-- **SHORT** : biais et stacking baissiers, purge préalable du swing high, prise du swing low, déplacement, nouveau MSS, FVG baissière en premium, puis retracement en premium pendant une fenêtre autorisée ;
-- **aucun stack complet** : aucun trade et aucun signal ;
-- **Fibonacci 0** : origine verrouillée au point de purge ;
-- **horaires autorisés** :  
-* Asian killzone: 07:00 PM - 10:00 PM
- * London killzone: 02:00 AM - 05:00 AM
- * New York killzone: 07:00 AM - 10:00 AM
-en heure de New York.
+- **LONG** : purge clôturée du swing low, structure interne post-purge, sweep du
+  swing high externe, MSS interne, déplacement/FVG dont la CE est en discount,
+  puis retracement et achat marché dans la même fenêtre ;
+- **SHORT** : miroir exact avec purge clôturée du swing high, structure interne,
+  sweep du swing low externe, MSS, CE en premium et vente marché ;
+- **aucun stack complet** : aucun setup, signal ou trade ;
+- **Fib0** : extrême verrouillé de la bougie de purge ;
+- **horaires** : `[02:00,05:00)`, `[07:00,10:00)` et `[19:00,22:00)`, heure de
+  New York, sans conservation inter-fenêtre.

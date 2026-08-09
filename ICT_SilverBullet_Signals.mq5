@@ -1,14 +1,16 @@
 //+------------------------------------------------------------------+
 //|                                     ICT_SilverBullet_Signals.mq5  |
 //|   Portage MT5 de l'indicateur "ICT Silver Bullet Signals" (NT).   |
-//|   OUTIL DE SIGNAUX (aucun ordre) — modele CONTINUATION identique  |
-//|   a l'EA ICT_SilverBullet_Strategy.                               |
+//|   OUTIL DE SIGNAUX (aucun ordre) — moteur partage avec l'EA.      |
+//|   LONG : stack strict, purge/reintegration du swing low, MSS      |
+//|   interne + deplacement/FVG discount, puis retracement horaire.   |
+//|   SHORT : sequence miroir en premium.                             |
 //|   Trace : EMA10/20 (base de la logique), triangle vert (LONG) /   |
-//|   rouge (SHORT), lignes SL/TP optionnelles, killzones en TRAITS   |
+//|   rouge (SHORT), lignes SL/TP optionnelles, fenetres NY en TRAITS|
 //|   EN BAS (NY EST), dashboard style NT deplacable (- / X, decompte)|
 //+------------------------------------------------------------------+
 #property copyright "ICT Silver Bullet Signals - portage MT5"
-#property version   "1.10"
+#property version   "2.00"
 #property strict
 #property indicator_chart_window
 #property indicator_buffers 2
@@ -24,8 +26,16 @@
 #property indicator_style2  STYLE_SOLID
 #property indicator_width2  2
 
+#include "ICT_SilverBullet_Core.mqh"
+
 //====================== ENUMS ======================
 enum SbsTradeDir { SBS_BOTH=0, SBS_LONGONLY=1, SBS_SHORTONLY=2 };
+enum SbsBrokerTimeMode
+{
+   SBS_BROKER_AUTO_LIVE=0,
+   SBS_BROKER_FIXED=1,
+   SBS_BROKER_EU_DST=2
+};
 
 //====================== INPUTS ======================
 input group "== 1. Biais & Alignement =="
@@ -34,9 +44,9 @@ input ENUM_TIMEFRAMES InpConf1TF      = PERIOD_M5;
 input ENUM_TIMEFRAMES InpConf2TF      = PERIOD_M1;
 input int             InpEmaFast      = 10;
 input int             InpEmaSlow      = 20;
-input bool            InpRequireAlign = true;
+input bool            InpRequireAlign = true; // Compatibilite : doit rester true
 input SbsTradeDir     InpTradeDir     = SBS_BOTH;
-input bool            InpUseTrendFilter = true;
+input bool            InpUseTrendFilter = true; // Compatibilite : D1 reste obligatoire
 input ENUM_TIMEFRAMES InpTrendTF      = PERIOD_D1;
 
 input group "== 2. Modeles de signal =="
@@ -44,12 +54,14 @@ input bool   InpUseOTE       = false;
 input bool   InpUseFVG       = true;
 input bool   InpUseEmaRetest = true;
 input double InpOteLow        = 0.62;
+input double InpOteHigh       = 0.79;
 input double InpOteSweet      = 0.705;
 input int    InpMinDispTicks  = 20;
 input int    InpMinFvgTicks   = 1;
 input int    InpSetupExpiry   = 30;
-input bool   InpRequireMSS    = true;
-input int    InpMssLookback   = 15;
+input bool   InpRequireMSS    = true; // Compatibilite : MSS toujours obligatoire
+input int    InpMssLookback   = 15;   // Compatibilite des anciens presets
+input int    InpMaxPositions  = 3;    // Cap des setups candidats de l'indicateur
 
 input group "== 3. Niveaux affiches =="
 input int    InpSlBufferTicks = 4;
@@ -58,35 +70,30 @@ input double InpFinalR        = 4.0;
 input bool   InpShowSlTp      = false;
 
 input group "== 4. Filtre & visuel =="
-input bool   InpUseSbWindows  = true;   // Restreindre aux fenetres Silver Bullet
+input bool   InpUseSbWindows  = true;   // Compatibilite : doit rester true
 input bool   InpShowEma       = true;   // Tracer EMA10/20 (base de la logique)
-input bool   InpShowWindows   = true;   // Killzones (traits en bas)
-input bool   InpShowMacros    = true;   // Macros seconde chance (traits en bas)
+input bool   InpShowWindows   = true;   // Trois fenetres d'entree (traits en bas)
+input bool   InpShowMacros    = true;   // Compatibilite anciens presets (sans effet)
 input bool   InpShowDashboard = true;   // Tableau de bord (deplacable)
 input bool   InpShowCountdown = true;   // Decompte de bougie
 input color  InpLongColor     = clrLime;
 input color  InpShortColor    = clrRed;
 input int    InpArrowWidth    = 2;
 input int    InpMaxBarsBack   = 3000;
+input int    InpSwingWarmupBars = 500; // Prechauffage des swings avant la zone affichee
 input bool   InpAlerts        = true;
 input bool   InpPush          = true;   // Notification PUSH mobile (MetaQuotes ID requis)
 
 input group "== 5. Heure NY (DST) =="
-input bool   InpAutoDST         = true;  // Heure NY DST auto (EDT/EST)
-input int    InpManualNYOffset  = -4;    // Decalage GMT de NY manuel (si DST auto OFF)
-input int    InpBrokerGmtHours  = 99;    // Decalage GMT du broker (99 = auto-detecte)
+input bool   InpAutoDST         = true;  // Compatibilite : DST NY date obligatoire
+input int    InpManualNYOffset  = -4;    // Compatibilite preset (non utilise en v2)
+input SbsBrokerTimeMode InpBrokerTimeMode = SBS_BROKER_EU_DST;
+input int    InpBrokerGmtHours       = 2; // Offset fixe ou heure standard Europe
 
-//====================== SETUP STRUCT ======================
-struct SbsSetup
-{
-   int      dir;
-   double   sweepPx, sweepExtreme, legLo, legHi;
-   int      sweepBar;
-   bool     armed, hasFvg;
-   double   fvgTop, fvgBot;
-   bool     done;
-};
-SbsSetup g_setups[];
+//====================== MOTEUR PARTAGE ======================
+SblSetup            g_setups[];
+SblConsumedRegistry g_consumed;
+SblConfig           g_coreConfig;
 
 //====================== GLOBALS ======================
 double g_emaFastBuf[], g_emaSlowBuf[];
@@ -100,10 +107,11 @@ int hTrF  =INVALID_HANDLE, hTrS  =INVALID_HANDLE;
 int      g_biasHtf=0, g_biasC1=0, g_biasC2=0, g_trendBias=0;
 double   g_lastSwingHi=0, g_lastSwingLo=0;
 bool     g_haveHi=false, g_haveLo=false;
-int      g_mssBias=0, g_mssBar=-1000000;
+datetime g_lastSwingHiTime=0, g_lastSwingLoTime=0;
+int      g_lastSwingHiConfirmBar=-1, g_lastSwingLoConfirmBar=-1;
 int      g_alignedDir=0;
 
-int      g_seq=0;
+int      g_nextSetupId=0;
 int      g_barIndex=0;
 datetime g_lastProcTime=0;
 int      g_brokerOff=0;         // decalage broker->GMT (secondes)
@@ -124,6 +132,45 @@ const string PFX="SBS_";
 //+------------------------------------------------------------------+
 int OnInit()
 {
+   if(InpHtfTF!=PERIOD_H1 || InpConf1TF!=PERIOD_M5 ||
+      InpConf2TF!=PERIOD_M1 || InpTrendTF!=PERIOD_D1)
+   {
+      Print("ICT SB Signals : le stacking cible exige D1 + H1 + M5 + M1");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(!InpUseSbWindows)
+   {
+      Print("ICT SB Signals : InpUseSbWindows est conserve pour compatibilite "
+            "mais doit rester true dans la logique v2");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(InpEmaFast!=10 || InpEmaSlow!=20 || !InpAutoDST ||
+      !InpRequireAlign || !InpUseTrendFilter || !InpRequireMSS ||
+      MathAbs(InpOteLow-0.62)>1e-9 ||
+      MathAbs(InpOteHigh-0.79)>1e-9 ||
+      InpOteSweet<InpOteLow || InpOteSweet>InpOteHigh ||
+      InpMinDispTicks<0 || InpMinFvgTicks<=0 || InpSetupExpiry<=0 ||
+      InpMssLookback<=0 || InpMaxPositions<=0 ||
+      InpSlBufferTicks<0 || InpTp1R<=0 || InpFinalR<=InpTp1R ||
+      InpMaxBarsBack<InpEmaSlow+10 ||
+      InpSwingWarmupBars<10 ||
+      InpManualNYOffset<-12 || InpManualNYOffset>14 ||
+      InpBrokerGmtHours<-12 || InpBrokerGmtHours>14 ||
+      (!InpUseOTE && !InpUseFVG && !InpUseEmaRetest))
+   {
+      Print("ICT SB Signals : parametres invalides");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(InpBrokerTimeMode==SBS_BROKER_AUTO_LIVE &&
+      (bool)MQLInfoInteger(MQL_TESTER))
+   {
+      Print("ICT SB Signals : AUTO_LIVE interdit en testeur ; choisir FIXED ou EU_DST");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(InpBrokerTimeMode==SBS_BROKER_AUTO_LIVE)
+      Print("ICT SB Signals : AUTO_LIVE utilise l'offset broker actuel. "
+            "Les signaux historiques peuvent etre decales ; utiliser FIXED ou EU_DST.");
+
    SetIndexBuffer(0,g_emaFastBuf,INDICATOR_DATA);
    SetIndexBuffer(1,g_emaSlowBuf,INDICATOR_DATA);
    ArraySetAsSeries(g_emaFastBuf,true);
@@ -143,11 +190,26 @@ int OnInit()
    hC2S  =iMA(_Symbol,InpConf2TF,InpEmaSlow,0,MODE_EMA,PRICE_CLOSE);
    hTrF  =iMA(_Symbol,InpTrendTF,InpEmaFast,0,MODE_EMA,PRICE_CLOSE);
    hTrS  =iMA(_Symbol,InpTrendTF,InpEmaSlow,0,MODE_EMA,PRICE_CLOSE);
-   if(hExecF==INVALID_HANDLE||hHtfF==INVALID_HANDLE||hC1F==INVALID_HANDLE||
-      hC2F==INVALID_HANDLE||hTrF==INVALID_HANDLE)
+   if(hExecF==INVALID_HANDLE||hExecS==INVALID_HANDLE||
+      hHtfF==INVALID_HANDLE ||hHtfS==INVALID_HANDLE ||
+      hC1F==INVALID_HANDLE  ||hC1S==INVALID_HANDLE  ||
+      hC2F==INVALID_HANDLE  ||hC2S==INVALID_HANDLE  ||
+      hTrF==INVALID_HANDLE  ||hTrS==INVALID_HANDLE)
    { Print("ICT SB Signals : erreur handles EMA"); return(INIT_FAILED); }
 
-   g_brokerOff=DetectBrokerOffset();
+   g_brokerOff=InpBrokerTimeMode==SBS_BROKER_AUTO_LIVE
+               ? DetectLiveBrokerOffset()
+               : 0;
+   g_coreConfig.minDisplacement=InpMinDispTicks*Tick();
+   g_coreConfig.minFvgSize=InpMinFvgTicks*Tick();
+   g_coreConfig.oteLow=InpOteLow;
+   g_coreConfig.oteHigh=InpOteHigh;
+   g_coreConfig.expiryBars=InpSetupExpiry;
+   g_coreConfig.requireWindow=true;
+   g_coreConfig.useFvgTrigger=InpUseFVG;
+   g_coreConfig.useOteTrigger=InpUseOTE;
+   g_coreConfig.useEmaTrigger=InpUseEmaRetest;
+   SblResetRegistry(g_consumed);
 
    IndicatorSetString(INDICATOR_SHORTNAME,"ICT SB Signals");
    ChartSetInteger(0,CHART_EVENT_MOUSE_MOVE,true);
@@ -177,61 +239,86 @@ void OnDeinit(const int reason)
 }
 
 //=================== heure NY / DST ===================
-int DetectBrokerOffset()
+int DetectLiveBrokerOffset()
 {
-   if(InpBrokerGmtHours!=99) return InpBrokerGmtHours*3600;
    datetime g=TimeGMT(), s=TimeTradeServer();
    if(g<=0||s<=0) return 0;
-   return (int)MathRound((double)(s-g)/3600.0)*3600;
+   return (int)MathRound((double)(s-g)/900.0)*900;
 }
-bool IsUSDST(datetime g)
+
+int BrokerOffsetAtUtc(datetime utc)
 {
-   MqlDateTime t; TimeToStruct(g,t);
-   int month=t.mon, day=t.day;
-   if(month<3||month>11) return false;
-   if(month>3&&month<11) return true;
-   MqlDateTime m; m.year=t.year; m.mon=month; m.day=1; m.hour=0; m.min=0; m.sec=0;
-   datetime first=StructToTime(m);
-   MqlDateTime fw; TimeToStruct(first,fw);
-   int dow1=fw.day_of_week;
-   int firstSunday=(dow1==0)?1:(8-dow1);
-   if(month==3)  { int secondSunday=firstSunday+7; return (day>=secondSunday); }
-   if(month==11) { return (day<firstSunday); }
-   return false;
+   if(InpBrokerTimeMode==SBS_BROKER_AUTO_LIVE) return g_brokerOff;
+   MqlDateTime value;
+   TimeToStruct(utc,value);
+   int mode=InpBrokerTimeMode==SBS_BROKER_EU_DST
+            ? SBL_BROKER_DST_EUROPE
+            : SBL_BROKER_OFFSET_CONSTANT;
+   return SblBrokerUtcOffsetSeconds(mode,InpBrokerGmtHours,
+                                    value.mon,value.day,
+                                    value.hour*60+value.min,
+                                    value.day_of_week);
+}
+
+datetime ServerToUtc(datetime server)
+{
+   if(InpBrokerTimeMode==SBS_BROKER_AUTO_LIVE)
+      return server-g_brokerOff;
+   if(InpBrokerTimeMode==SBS_BROKER_FIXED)
+      return server-InpBrokerGmtHours*3600;
+
+   datetime utc=server-InpBrokerGmtHours*3600;
+   int offset=BrokerOffsetAtUtc(utc);
+   utc=server-offset;
+   int correctedOffset=BrokerOffsetAtUtc(utc);
+   if(correctedOffset!=offset)
+      utc=server-correctedOffset;
+   return utc;
+}
+
+int NewYorkOffsetAtUtc(datetime utc)
+{
+   MqlDateTime value;
+   TimeToStruct(utc,value);
+   int minuteOfDay=value.hour*60+value.min;
+   return SblNewYorkUtcOffsetSeconds(value.mon,value.day,minuteOfDay,
+                                      value.day_of_week,InpAutoDST,
+                                      InpManualNYOffset);
 }
 // heure serveur -> heure NY (via GMT, avec offset broker)
 datetime ToNY(datetime server)
 {
-   datetime gmt=server-g_brokerOff;
-   int nyOff=InpAutoDST?(IsUSDST(gmt)?-4:-5):InpManualNYOffset;
-   return gmt+nyOff*3600;
+   datetime utc=ServerToUtc(server);
+   return utc+NewYorkOffsetAtUtc(utc);
 }
 // heure "NY" -> heure serveur
 datetime FromNY(datetime ny)
 {
-   int nyOff=InpAutoDST?(IsUSDST(ny)?-4:-5):InpManualNYOffset;
-   datetime gmt=ny-nyOff*3600;
-   return gmt+g_brokerOff;
+   if(!InpAutoDST)
+   {
+      datetime utc=ny-InpManualNYOffset*3600;
+      return utc+BrokerOffsetAtUtc(utc);
+   }
+
+   // Tester d'abord l'interpretation EDT, puis EST. Les fenetres
+   // d'entree ne traversent pas l'heure locale ambigue 01:00-02:00.
+   datetime utc=ny+4*3600;
+   if(NewYorkOffsetAtUtc(utc)!=-4*3600)
+      utc=ny+5*3600;
+   return utc+BrokerOffsetAtUtc(utc);
 }
 bool InSbWindow(datetime ny)
 {
    MqlDateTime st; TimeToStruct(ny,st);
-   double t=st.hour+st.min/60.0;
-   if(t>=3&&t<4)   return true;
-   if(t>=10&&t<11) return true;
-   if(t>=14&&t<15) return true;
-   if(t>=3.75&&t<4.25)   return true;
-   if(t>=10.75&&t<11.25) return true;
-   if(t>=14.75&&t<15.25) return true;
-   return false;
+   return SblInEntryWindowMinutes(st.hour*60+st.min);
 }
 string ActiveWinName(datetime ny)
 {
    MqlDateTime st; TimeToStruct(ny,st);
-   double t=st.hour+st.min/60.0;
-   if(t>=3&&t<4.25)   return "London Open";
-   if(t>=10&&t<11.25) return "AM";
-   if(t>=14&&t<15.25) return "PM";
+   int minuteOfDay=st.hour*60+st.min;
+   if(minuteOfDay>=2*60 && minuteOfDay<5*60)  return "London 02-05";
+   if(minuteOfDay>=7*60 && minuteOfDay<10*60) return "New York 07-10";
+   if(minuteOfDay>=19*60 && minuteOfDay<22*60)return "Asia 19-22";
    return "";
 }
 double Tick(){ double ts=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE); return (ts>0?ts:_Point); }
@@ -245,39 +332,112 @@ int TfClosedShift(ENUM_TIMEFRAMES tf, datetime tclose)
    if(bopen+tfs<=tclose) return sh;
    return sh+1;
 }
-int TfBias(int hF,int hS,ENUM_TIMEFRAMES tf,datetime tclose,int prev)
+bool TryTfBias(int hF,int hS,ENUM_TIMEFRAMES tf,datetime tclose,
+               int &bias)
 {
    int sh=TfClosedShift(tf,tclose);
-   if(sh<0) return prev;
+   if(sh<0) return false;
    double f[1],s[1];
-   if(CopyBuffer(hF,0,sh,1,f)<1) return prev;
-   if(CopyBuffer(hS,0,sh,1,s)<1) return prev;
+   if(CopyBuffer(hF,0,sh,1,f)<1) return false;
+   if(CopyBuffer(hS,0,sh,1,s)<1) return false;
    double c=iClose(_Symbol,tf,sh);
-   if(c>0&&c>f[0]&&f[0]>s[0]) return 1;
-   if(c>0&&c<f[0]&&f[0]<s[0]) return -1;
-   return prev;
+   if(c<=0.0) return false;
+   bias=SblStrictStack(c,f[0],s[0]);
+   return true;
 }
 
 //=================== gestion setups ===================
-void AddSetup(int dir,double sweepPx,double extreme,double legLo,double legHi,int bar)
+void ResetSignalEngine(bool clearSignalObjects)
 {
-   int n=ArraySize(g_setups); ArrayResize(g_setups,n+1);
-   g_setups[n].dir=dir; g_setups[n].sweepPx=sweepPx; g_setups[n].sweepExtreme=extreme;
-   g_setups[n].legLo=legLo; g_setups[n].legHi=legHi; g_setups[n].sweepBar=bar;
-   g_setups[n].armed=false; g_setups[n].hasFvg=false; g_setups[n].fvgTop=0; g_setups[n].fvgBot=0; g_setups[n].done=false;
+   ArrayResize(g_setups,0);
+   SblResetRegistry(g_consumed);
+   g_biasHtf=SBL_NEUTRAL;
+   g_biasC1=SBL_NEUTRAL;
+   g_biasC2=SBL_NEUTRAL;
+   g_trendBias=SBL_NEUTRAL;
+   g_alignedDir=SBL_NEUTRAL;
+   g_lastSwingHi=0.0;
+   g_lastSwingLo=0.0;
+   g_haveHi=false;
+   g_haveLo=false;
+   g_lastSwingHiTime=0;
+   g_lastSwingLoTime=0;
+   g_lastSwingHiConfirmBar=-1;
+   g_lastSwingLoConfirmBar=-1;
+   g_nextSetupId=0;
+   g_barIndex=0;
+   g_lastProcTime=0;
+   g_lastSignal="-";
+   g_lastSignalTime=0;
+   if(clearSignalObjects)
+      ObjectsDeleteAll(0,PFX+"sig");
 }
+
 void RemoveSetup(int idx)
 {
    int n=ArraySize(g_setups);
    for(int i=idx;i<n-1;i++) g_setups[i]=g_setups[i+1];
    ArrayResize(g_setups,n-1);
 }
-bool AlreadySwept(double lvl,int dir)
+
+bool HasSetupForLiquidity(int direction,long initialKey,long targetKey)
 {
-   double tk=Tick();
    for(int i=0;i<ArraySize(g_setups);i++)
-      if(g_setups[i].dir==dir && MathAbs(g_setups[i].sweepPx-lvl)<=tk) return true;
+   {
+      if(g_setups[i].direction!=direction)
+         continue;
+      long setupInitial=direction==SBL_LONG
+                        ? g_setups[i].refLowTime
+                        : g_setups[i].refHighTime;
+      long setupTarget=direction==SBL_LONG
+                       ? g_setups[i].refHighTime
+                       : g_setups[i].refLowTime;
+      if(setupInitial==initialKey || setupTarget==targetKey)
+         return true;
+   }
    return false;
+}
+
+bool TryCreateSignalSetup(int direction,const SblBar &bar)
+{
+   long initialKey=direction==SBL_LONG
+                   ? (long)g_lastSwingLoTime
+                   : (long)g_lastSwingHiTime;
+   long targetKey=direction==SBL_LONG
+                  ? (long)g_lastSwingHiTime
+                  : (long)g_lastSwingLoTime;
+   if(ArraySize(g_setups)>=InpMaxPositions ||
+      SblRegistryContains(g_consumed,direction,initialKey) ||
+      SblRegistryContains(g_consumed,direction,targetKey) ||
+      HasSetupForLiquidity(direction,initialKey,targetKey))
+      return false;
+
+   SblSetup setup;
+   int setupId=g_nextSetupId+1;
+   SblDecision startDecision;
+   bool started=SblStartSetup(setup,setupId,direction,bar,
+                              g_lastSwingHi,(long)g_lastSwingHiTime,
+                              g_lastSwingLo,(long)g_lastSwingLoTime,
+                              startDecision);
+   if(startDecision.consumeTarget)
+      SblRegistryConsume(g_consumed,startDecision.direction,
+                         startDecision.targetKey);
+   if(!started || !SblRegistryConsume(g_consumed,direction,initialKey))
+      return false;
+
+   int count=ArraySize(g_setups);
+   ArrayResize(g_setups,count+1);
+   g_setups[count]=setup;
+   g_nextSetupId=setupId;
+   return true;
+}
+
+string TriggerName(int trigger)
+{
+   if(trigger==SBL_TRIGGER_FVG) return "FVG";
+   if(trigger==SBL_TRIGGER_OTE) return "OTE";
+   if(trigger==SBL_TRIGGER_EMA) return "RetestEMA";
+   return "";
 }
 
 //=================== dessin signal ===================
@@ -293,12 +453,11 @@ void DrawSeg(string nm,datetime t1,double p1,datetime t2,double p2,color c,int s
    ObjectSetInteger(0,nm,OBJPROP_RAY_LEFT,false);
    ObjectSetInteger(0,nm,OBJPROP_SELECTABLE,false);
 }
-void DrawSignal(int dir,datetime t,double priceLow,double priceHigh,double entry,
+void DrawSignal(int setupId,int dir,datetime t,double priceLow,double priceHigh,double entry,
                 double sl,double tp1,double tp4,string trig,bool live)
 {
-   g_seq++;
    double rng=priceHigh-priceLow; if(rng<=0) rng=10*Tick();
-   string nm=PFX+"sig"+IntegerToString(g_seq);
+   string nm=PFX+"sig"+IntegerToString(setupId);
    double y=(dir>0)?priceLow-rng*0.6:priceHigh+rng*0.6;
    ObjectCreate(0,nm,OBJ_ARROW,0,t,y);
    ObjectSetInteger(0,nm,OBJPROP_ARROWCODE,(dir>0)?233:234);
@@ -334,12 +493,13 @@ void DrawSignal(int dir,datetime t,double priceLow,double priceHigh,double entry
    }
 }
 
-//=================== killzones = TRAITS EN BAS ===================
+//=================== fenetres d'entree = TRAITS EN BAS ===================
 void RebuildLanes()
 {
    ObjectsDeleteAll(0,PFX+"kz");
+   // Nettoyage des objets produits par les versions anterieures.
    ObjectsDeleteAll(0,PFX+"mac");
-   if(!InpShowWindows && !InpShowMacros) return;
+   if(!InpShowWindows) return;
 
    int bars=Bars(_Symbol,_Period); if(bars<10) return;
    long fvb=ChartGetInteger(0,CHART_FIRST_VISIBLE_BAR,0);
@@ -353,12 +513,24 @@ void RebuildLanes()
    double pmin=ChartGetDouble(0,CHART_PRICE_MIN,0);
    double pmax=ChartGetDouble(0,CHART_PRICE_MAX,0);
    if(pmax<=pmin) return;
-   double laneKZ =pmin+(pmax-pmin)*0.045;
-   double laneMac=pmin+(pmax-pmin)*0.085;
+   double laneKZ=pmin+(pmax-pmin)*0.045;
 
-   color kzc[3]; kzc[0]=clrSteelBlue; kzc[1]=clrMediumSeaGreen; kzc[2]=clrGoldenrod;
-   string kzn[3]; kzn[0]="London"; kzn[1]="AM"; kzn[2]="PM";
-   int    kzh[3]; kzh[0]=3; kzh[1]=10; kzh[2]=14;
+   color kzc[3];
+   kzc[0]=clrSteelBlue;
+   kzc[1]=clrMediumSeaGreen;
+   kzc[2]=clrMediumPurple;
+   string kzn[3];
+   kzn[0]="London 02:00-05:00";
+   kzn[1]="New York 07:00-10:00";
+   kzn[2]="Asia 19:00-22:00";
+   int kzStartMin[3];
+   kzStartMin[0]=2*60;
+   kzStartMin[1]=7*60;
+   kzStartMin[2]=19*60;
+   int kzEndMin[3];
+   kzEndMin[0]=5*60;
+   kzEndMin[1]=10*60;
+   kzEndMin[2]=22*60;
 
    // iterer par jour NY couvrant [tLeft,tRight]
    datetime nyL=ToNY(tLeft), nyR=ToNY(tRight);
@@ -372,54 +544,27 @@ void RebuildLanes()
       string dkey=StringFormat("%04d%02d%02d",dk.year,dk.mon,dk.day);
       for(int k=0;k<3;k++)
       {
-         // killzone principale [k:00, k+1:00] NY
-         if(InpShowWindows)
+         datetime a=FromNY(nyDay+kzStartMin[k]*60);
+         datetime b=FromNY(nyDay+kzEndMin[k]*60);
+         if(b>=tLeft && a<=tRight)
          {
-            datetime a=FromNY(nyDay+kzh[k]*3600);
-            datetime b=FromNY(nyDay+(kzh[k]+1)*3600);
-            if(b>=tLeft && a<=tRight)
-            {
-               datetime aa=(a<tLeft)?tLeft:a;
-               datetime bb=(b>tRight)?tRight:b;
-               string nm=PFX+"kz"+dkey+"_"+IntegerToString(k);
-               ObjectCreate(0,nm,OBJ_TREND,0,aa,laneKZ,bb,laneKZ);
-               ObjectSetInteger(0,nm,OBJPROP_COLOR,kzc[k]);
-               ObjectSetInteger(0,nm,OBJPROP_WIDTH,4);
-               ObjectSetInteger(0,nm,OBJPROP_RAY_RIGHT,false);
-               ObjectSetInteger(0,nm,OBJPROP_RAY_LEFT,false);
-               ObjectSetInteger(0,nm,OBJPROP_BACK,false);
-               ObjectSetInteger(0,nm,OBJPROP_SELECTABLE,false);
-               // etiquette de session
-               string lt=PFX+"kzL"+dkey+"_"+IntegerToString(k);
-               ObjectCreate(0,lt,OBJ_TEXT,0,aa,laneKZ);
-               ObjectSetString(0,lt,OBJPROP_TEXT," "+kzn[k]);
-               ObjectSetInteger(0,lt,OBJPROP_COLOR,kzc[k]);
-               ObjectSetInteger(0,lt,OBJPROP_FONTSIZE,7);
-               ObjectSetInteger(0,lt,OBJPROP_ANCHOR,ANCHOR_LEFT_LOWER);
-               ObjectSetInteger(0,lt,OBJPROP_SELECTABLE,false);
-               // renommer pour effacement groupe kz
-               ObjectSetString(0,lt,OBJPROP_NAME,lt);
-            }
-         }
-         // macro seconde chance [k:45, k+1:15] NY
-         if(InpShowMacros)
-         {
-            datetime a=FromNY(nyDay+kzh[k]*3600+45*60);
-            datetime b=FromNY(nyDay+(kzh[k]+1)*3600+15*60);
-            if(b>=tLeft && a<=tRight)
-            {
-               datetime aa=(a<tLeft)?tLeft:a;
-               datetime bb=(b>tRight)?tRight:b;
-               string nm=PFX+"mac"+dkey+"_"+IntegerToString(k);
-               ObjectCreate(0,nm,OBJ_TREND,0,aa,laneMac,bb,laneMac);
-               ObjectSetInteger(0,nm,OBJPROP_COLOR,kzc[k]);
-               ObjectSetInteger(0,nm,OBJPROP_WIDTH,2);
-               ObjectSetInteger(0,nm,OBJPROP_STYLE,STYLE_DOT);
-               ObjectSetInteger(0,nm,OBJPROP_RAY_RIGHT,false);
-               ObjectSetInteger(0,nm,OBJPROP_RAY_LEFT,false);
-               ObjectSetInteger(0,nm,OBJPROP_BACK,false);
-               ObjectSetInteger(0,nm,OBJPROP_SELECTABLE,false);
-            }
+            datetime aa=(a<tLeft)?tLeft:a;
+            datetime bb=(b>tRight)?tRight:b;
+            string nm=PFX+"kz"+dkey+"_"+IntegerToString(k);
+            ObjectCreate(0,nm,OBJ_TREND,0,aa,laneKZ,bb,laneKZ);
+            ObjectSetInteger(0,nm,OBJPROP_COLOR,kzc[k]);
+            ObjectSetInteger(0,nm,OBJPROP_WIDTH,4);
+            ObjectSetInteger(0,nm,OBJPROP_RAY_RIGHT,false);
+            ObjectSetInteger(0,nm,OBJPROP_RAY_LEFT,false);
+            ObjectSetInteger(0,nm,OBJPROP_BACK,false);
+            ObjectSetInteger(0,nm,OBJPROP_SELECTABLE,false);
+            string lt=PFX+"kzL"+dkey+"_"+IntegerToString(k);
+            ObjectCreate(0,lt,OBJ_TEXT,0,aa,laneKZ);
+            ObjectSetString(0,lt,OBJPROP_TEXT," "+kzn[k]);
+            ObjectSetInteger(0,lt,OBJPROP_COLOR,kzc[k]);
+            ObjectSetInteger(0,lt,OBJPROP_FONTSIZE,7);
+            ObjectSetInteger(0,lt,OBJPROP_ANCHOR,ANCHOR_LEFT_LOWER);
+            ObjectSetInteger(0,lt,OBJPROP_SELECTABLE,false);
          }
       }
    }
@@ -540,13 +685,13 @@ void UpdateDashboard()
    if(!InpShowDashboard || g_hidden) return;
    string htf=TfShort(InpHtfTF), c1=TfShort(InpConf1TF), c2=TfShort(InpConf2TF), trs=TfShort(InpTrendTF);
 
-   MkLabel(PFX+"kt1","Biais "+htf,clrWhite,8,false);
-   bool aligned = g_biasHtf!=0 && (!InpRequireAlign || (g_biasC1==g_biasHtf && g_biasC2==g_biasHtf));
-   MkLabel(PFX+"vt1",BiasTxt(g_biasHtf)+"  "+c1+"·"+c2,clrWhite,8,false);
-   ObjectSetInteger(0,PFX+"v1",OBJPROP_BGCOLOR, aligned?BiasCol(g_biasHtf):C'90,90,90');
+   MkLabel(PFX+"kt1","Stack",clrWhite,8,false);
+   bool aligned=(g_alignedDir!=SBL_NEUTRAL);
+   MkLabel(PFX+"vt1",BiasTxt(g_alignedDir)+"  "+trs+"·"+htf+"·"+c1+"·"+c2,clrWhite,8,false);
+   ObjectSetInteger(0,PFX+"v1",OBJPROP_BGCOLOR,aligned?BiasCol(g_alignedDir):C'90,90,90');
 
-   MkLabel(PFX+"kt2","Tendance "+trs,clrWhite,8,false);
-   MkLabel(PFX+"vt2",BiasTxt(g_trendBias)+(InpUseTrendFilter?" [ON]":""),clrWhite,8,false);
+   MkLabel(PFX+"kt2","Biais "+trs,clrWhite,8,false);
+   MkLabel(PFX+"vt2",BiasTxt(g_trendBias)+" [STRICT]",clrWhite,8,false);
    ObjectSetInteger(0,PFX+"v2",OBJPROP_BGCOLOR,BiasCol(g_trendBias));
 
    datetime ny=ToNY(TimeCurrent());
@@ -574,6 +719,15 @@ void UpdateDashboard()
 
 void OnTimer()
 {
+   if(InpBrokerTimeMode==SBS_BROKER_AUTO_LIVE)
+   {
+      int detected=DetectLiveBrokerOffset();
+      if(detected!=g_brokerOff)
+      {
+         g_brokerOff=detected;
+         if(InpShowWindows) RebuildLanes();
+      }
+   }
    if(InpShowDashboard){ UpdateDashboard(); ChartRedraw(); }
 }
 
@@ -629,7 +783,19 @@ int OnCalculate(const int rates_total,
                 const long &volume[],
                 const int &spread[])
 {
-   if(rates_total<InpEmaSlow+10) return(rates_total);
+   ArraySetAsSeries(time,false);
+   ArraySetAsSeries(open,false);
+   ArraySetAsSeries(high,false);
+   ArraySetAsSeries(low,false);
+   ArraySetAsSeries(close,false);
+
+   if(rates_total<InpEmaSlow+10) return(0);
+   if(BarsCalculated(hExecF)<InpEmaSlow+2 || BarsCalculated(hExecS)<InpEmaSlow+2 ||
+      BarsCalculated(hHtfF)<InpEmaSlow+2  || BarsCalculated(hHtfS)<InpEmaSlow+2  ||
+      BarsCalculated(hC1F)<InpEmaSlow+2   || BarsCalculated(hC1S)<InpEmaSlow+2   ||
+      BarsCalculated(hC2F)<InpEmaSlow+2   || BarsCalculated(hC2S)<InpEmaSlow+2   ||
+      BarsCalculated(hTrF)<InpEmaSlow+2   || BarsCalculated(hTrS)<InpEmaSlow+2)
+      return(prev_calculated);
 
    // --- EMA10/20 sur le graphe ---
    int toCopy=(prev_calculated==0)?rates_total:(rates_total-prev_calculated+2);
@@ -637,8 +803,9 @@ int OnCalculate(const int rates_total,
    if(toCopy<1) toCopy=1;
    if(InpShowEma)
    {
-      CopyBuffer(hExecF,0,0,toCopy,g_emaFastBuf);
-      CopyBuffer(hExecS,0,0,toCopy,g_emaSlowBuf);
+      if(CopyBuffer(hExecF,0,0,toCopy,g_emaFastBuf)!=toCopy ||
+         CopyBuffer(hExecS,0,0,toCopy,g_emaSlowBuf)!=toCopy)
+         return(prev_calculated);
    }
    else
    {
@@ -646,153 +813,221 @@ int OnCalculate(const int rates_total,
    }
 
    double tk=Tick();
+   g_coreConfig.minDisplacement=InpMinDispTicks*tk;
+   g_coreConfig.minFvgSize=InpMinFvgTicks*tk;
 
-   for(int b=MathMax(6, (g_lastProcTime==0? rates_total-1-InpMaxBarsBack : 6)); b<=rates_total-2; b++)
+   bool rebuilding=(prev_calculated==0 || prev_calculated>rates_total || g_lastProcTime==0);
+   int outputStart=MathMax(6,rates_total-1-InpMaxBarsBack);
+   int start=0;
+   if(rebuilding)
+   {
+      ResetSignalEngine(true);
+      int warmup=MathMax(InpSwingWarmupBars,InpSetupExpiry+10);
+      start=MathMax(6,outputStart-warmup);
+   }
+   else
+   {
+      // Rechercher uniquement les bougies nouvelles. Cette forme reste correcte
+      // lorsque rates_total est plafonne et que l'index de l'historique glisse.
+      int cursor=rates_total-2;
+      while(cursor>=6 && time[cursor]>g_lastProcTime)
+         cursor--;
+      start=cursor+1;
+   }
+
+   int processedBars=0;
+   int periodSeconds=PeriodSeconds(PERIOD_CURRENT);
+   if(periodSeconds<=0) return(prev_calculated);
+   for(int b=start;b<=rates_total-2;b++)
    {
       if(time[b]<=g_lastProcTime) continue;
+
+      double h1=high[b],l1=low[b];
+
+      // Une fermeture est l'heure d'ouverture + la duree du timeframe. Utiliser
+      // l'ouverture suivante classerait la derniere bougie avant un gap avec
+      // l'heure de reouverture (week-end/session) et fausserait la fenetre NY.
+      datetime tclose=time[b]+periodSeconds;
+
+      int biasHtf=SBL_NEUTRAL;
+      int biasC1=SBL_NEUTRAL;
+      int biasC2=SBL_NEUTRAL;
+      int trendBias=SBL_NEUTRAL;
+      if(!TryTfBias(hHtfF,hHtfS,InpHtfTF,tclose,biasHtf) ||
+         !TryTfBias(hC1F,hC1S,InpConf1TF,tclose,biasC1) ||
+         !TryTfBias(hC2F,hC2S,InpConf2TF,tclose,biasC2) ||
+         !TryTfBias(hTrF,hTrS,InpTrendTF,tclose,trendBias))
+         return(prev_calculated);
+
+      double execEmaF=0.0;
+      double ev[1];
+      int shExec=(rates_total-1)-b;
+      if(CopyBuffer(hExecF,0,shExec,1,ev)<1 || ev[0]<=0.0)
+         return(prev_calculated);
+      execEmaF=ev[0];
+
+      // La barre n'est acquittee qu'apres toutes les lectures multi-TF.
+      // Une indisponibilite temporaire sera ainsi rejouee au prochain appel.
       g_lastProcTime=time[b];
       g_barIndex++;
-
-      double h1=high[b],  l1=low[b],  c1=close[b], o1=open[b];
-      double h2=high[b-1],l2=low[b-1];
-      double h3=high[b-2],l3=low[b-2];
-      double h4=high[b-3],l4=low[b-3];
-      double h5=high[b-4],l5=low[b-4];
-      double h6=high[b-5],l6=low[b-5];
-
-      datetime tclose=time[b]+PeriodSeconds(_Period);
-      datetime ny=ToNY(time[b]);
-
-      g_biasHtf  =TfBias(hHtfF,hHtfS,InpHtfTF,  tclose,g_biasHtf);
-      g_biasC1   =TfBias(hC1F, hC1S, InpConf1TF,tclose,g_biasC1);
-      g_biasC2   =TfBias(hC2F, hC2S, InpConf2TF,tclose,g_biasC2);
-      g_trendBias=TfBias(hTrF, hTrS, InpTrendTF,tclose,g_trendBias);
-
-      int alignedDir=g_biasHtf;
-      if(InpRequireAlign)
-      {
-         if(g_biasHtf!=0 && g_biasC1==g_biasHtf && g_biasC2==g_biasHtf) alignedDir=g_biasHtf;
-         else alignedDir=0;
-      }
-      if(InpUseTrendFilter && (g_trendBias==0 || alignedDir!=g_trendBias)) alignedDir=0;
+      processedBars++;
+      g_biasHtf=biasHtf;
+      g_biasC1=biasC1;
+      g_biasC2=biasC2;
+      g_trendBias=trendBias;
+      int alignedDir=SblAlignedBias(trendBias,biasHtf,biasC1,biasC2);
       g_alignedDir=alignedDir;
 
-      if(h4>h2 && h4>h3 && h4>h5 && h4>h6){ g_lastSwingHi=h4; g_haveHi=true; }
-      if(l4<l2 && l4<l3 && l4<l5 && l4<l6){ g_lastSwingLo=l4; g_haveLo=true; }
-      if(g_haveHi && c1>g_lastSwingHi){ g_mssBias=1;  g_mssBar=g_barIndex; }
-      if(g_haveLo && c1<g_lastSwingLo){ g_mssBias=-1; g_mssBar=g_barIndex; }
+      // Une unique detection 2/2 du core alimente a la fois les swings de
+      // reference et le pivot interne attendu par chaque setup.
+      SblBar pivotBars[5];
+      for(int offset=0;offset<5;offset++)
+      {
+         int source=b-4+offset;
+         datetime sourceClose=time[source]+periodSeconds;
+         datetime sourceNy=ToNY(sourceClose);
+         MqlDateTime sourceNyFields;
+         TimeToStruct(sourceNy,sourceNyFields);
+         int sourceMinute=sourceNyFields.hour*60+sourceNyFields.min;
 
-      bool bullFvg=(l2>h4)&&((l2-h4)>=InpMinFvgTicks*tk);
-      bool bearFvg=(h2<l4)&&((l4-h2)>=InpMinFvgTicks*tk);
-      double fvgTop=0,fvgBot=0;
-      if(bullFvg){ fvgTop=l2; fvgBot=h4; }
-      if(bearFvg){ fvgTop=h2; fvgBot=l4; }
+         pivotBars[offset].time=(long)sourceClose;
+         pivotBars[offset].index=g_barIndex-4+offset;
+         pivotBars[offset].open=open[source];
+         pivotBars[offset].high=high[source];
+         pivotBars[offset].low=low[source];
+         pivotBars[offset].close=close[source];
+         pivotBars[offset].emaFast=0.0;
+         pivotBars[offset].previousClose=close[source-1];
+         pivotBars[offset].windowKey=SblEntryWindowKey(
+            sourceNyFields.year*10000+sourceNyFields.mon*100+sourceNyFields.day,
+            sourceMinute);
+      }
 
-      double execEmaF=0; double ev[1];
-      int shExec=(rates_total-1)-b;
-      if(CopyBuffer(hExecF,0,shExec,1,ev)>=1) execEmaF=ev[0];
+      SblPivot longPivot,shortPivot;
+      SblDetectInternalPivot(SBL_LONG,pivotBars[0],pivotBars[1],
+                             pivotBars[2],pivotBars[3],pivotBars[4],
+                             longPivot);
+      SblDetectInternalPivot(SBL_SHORT,pivotBars[0],pivotBars[1],
+                             pivotBars[2],pivotBars[3],pivotBars[4],
+                             shortPivot);
+      SblRejectAmbiguousDualPivot(longPivot,shortPivot);
 
-      bool live=(b==rates_total-2);
+      SblBar bar;
+      bar=pivotBars[4];
+      bar.emaFast=execEmaF;
+
+      SblFvg newFvg;
+      SblDetectFvg(bar,pivotBars[2],g_coreConfig.minFvgSize,newFvg);
+      bool inWindow=bar.windowKey>0;
+      datetime serverNow=TimeCurrent();
+      bool recent=serverNow>=tclose && serverNow-tclose<=periodSeconds;
+      bool live=(!rebuilding && b==rates_total-2 && recent);
 
       for(int i=ArraySize(g_setups)-1;i>=0;i--)
       {
-         if(g_setups[i].done){ RemoveSetup(i); continue; }
+         SblPivot setupPivot;
+         if(g_setups[i].direction==SBL_LONG)
+            setupPivot=longPivot;
+         else
+            setupPivot=shortPivot;
+         SblDecision decision;
+         SblAdvanceSetup(g_setups[i],bar,alignedDir,setupPivot,newFvg,inWindow,
+                         g_coreConfig,decision);
 
-         if(g_setups[i].dir>0) g_setups[i].legHi=MathMax(g_setups[i].legHi,h1);
-         else                  g_setups[i].legLo=MathMin(g_setups[i].legLo,l1);
+         if(decision.consumeTarget)
+            SblRegistryConsume(g_consumed,decision.direction,
+                               decision.targetKey);
 
-         if(g_setups[i].dir>0 && bullFvg && (!g_setups[i].hasFvg || fvgTop<g_setups[i].fvgTop))
-            { g_setups[i].hasFvg=true; g_setups[i].fvgTop=fvgTop; g_setups[i].fvgBot=fvgBot; }
-         if(g_setups[i].dir<0 && bearFvg && (!g_setups[i].hasFvg || fvgBot>g_setups[i].fvgBot))
-            { g_setups[i].hasFvg=true; g_setups[i].fvgTop=fvgTop; g_setups[i].fvgBot=fvgBot; }
-
-         if(!g_setups[i].armed)
+         if(decision.signal)
          {
-            double disp=g_setups[i].dir>0?(g_setups[i].legHi-g_setups[i].sweepExtreme)
-                                         :(g_setups[i].sweepExtreme-g_setups[i].legLo);
-            if(g_setups[i].hasFvg || disp>=InpMinDispTicks*tk) g_setups[i].armed=true;
-         }
-
-         bool invalid=(g_setups[i].dir>0 && c1<g_setups[i].sweepExtreme) ||
-                      (g_setups[i].dir<0 && c1>g_setups[i].sweepExtreme);
-         if(invalid || alignedDir!=g_setups[i].dir || (g_barIndex-g_setups[i].sweepBar)>InpSetupExpiry)
-            { RemoveSetup(i); continue; }
-
-         if(g_setups[i].armed)
-         {
-            bool mssOk=!InpRequireMSS || (g_mssBias==g_setups[i].dir && (g_barIndex-g_mssBar)<=InpMssLookback);
-            if((!InpUseSbWindows || InSbWindow(ny)) && mssOk)
+            double entry=decision.expectedEntry;
+            double sl=decision.direction==SBL_LONG
+                      ? g_setups[i].fib0-InpSlBufferTicks*tk
+                      : g_setups[i].fib0+InpSlBufferTicks*tk;
+            double risk=MathAbs(entry-sl);
+            if(risk>=tk && b>=outputStart)
             {
-               double entry=EMPTY_VALUE; string trig="";
-               double legLo=g_setups[i].legLo, legHi=g_setups[i].legHi;
-               double mid=legLo+0.5*(legHi-legLo);
-
-               if(InpUseFVG && g_setups[i].hasFvg)
-               {
-                  if(g_setups[i].dir>0 && g_setups[i].fvgTop<=mid && l1<=g_setups[i].fvgTop && h1>=g_setups[i].fvgBot)
-                     { entry=MathMin(o1,g_setups[i].fvgTop); trig="FVG"; }
-                  if(g_setups[i].dir<0 && g_setups[i].fvgBot>=mid && h1>=g_setups[i].fvgBot && l1<=g_setups[i].fvgTop)
-                     { entry=MathMax(o1,g_setups[i].fvgBot); trig="FVG"; }
-               }
-               if(entry==EMPTY_VALUE && InpUseOTE)
-               {
-                  double rng=legHi-legLo;
-                  if(rng>0)
-                  {
-                     if(g_setups[i].dir>0)
-                     {
-                        double zHi=legHi-InpOteLow*rng, sweet=legHi-InpOteSweet*rng;
-                        if(l1<=zHi){ entry=MathMin(o1,sweet>zHi?zHi:sweet); trig="OTE"; }
-                     }
-                     else
-                     {
-                        double zLo=legLo+InpOteLow*rng, sweet=legLo+InpOteSweet*rng;
-                        if(h1>=zLo){ entry=MathMax(o1,sweet<zLo?zLo:sweet); trig="OTE"; }
-                     }
-                  }
-               }
-               if(entry==EMPTY_VALUE && InpUseEmaRetest && execEmaF>0)
-               {
-                  if(g_setups[i].dir>0 && l1<=execEmaF && c1>=o1){ entry=c1; trig="RetestEMA"; }
-                  if(g_setups[i].dir<0 && h1>=execEmaF && c1<=o1){ entry=c1; trig="RetestEMA"; }
-               }
-
-               if(entry!=EMPTY_VALUE && trig!="")
-               {
-                  double sl=g_setups[i].dir>0?g_setups[i].sweepExtreme-InpSlBufferTicks*tk
-                                             :g_setups[i].sweepExtreme+InpSlBufferTicks*tk;
-                  double r=MathAbs(entry-sl);
-                  if(r>=tk)
-                  {
-                     double tp1=g_setups[i].dir>0?entry+InpTp1R*r:entry-InpTp1R*r;
-                     double tp4=g_setups[i].dir>0?entry+InpFinalR*r:entry-InpFinalR*r;
-                     DrawSignal(g_setups[i].dir,time[b],l1,h1,entry,sl,tp1,tp4,trig,live);
-                  }
-                  RemoveSetup(i);
-                  continue;
-               }
+               double tp1=decision.direction==SBL_LONG
+                          ? entry+InpTp1R*risk : entry-InpTp1R*risk;
+               double tp4=decision.direction==SBL_LONG
+                          ? entry+InpFinalR*risk : entry-InpFinalR*risk;
+               DrawSignal(decision.setupId,decision.direction,
+                          (datetime)g_setups[i].triggerTime,l1,h1,entry,sl,tp1,tp4,
+                          TriggerName(decision.trigger),live);
             }
+            RemoveSetup(i);
+            continue;
          }
+
+         if(g_setups[i].phase==SBL_PHASE_INVALID ||
+            g_setups[i].phase==SBL_PHASE_TRIGGERED)
+            RemoveSetup(i);
       }
 
       bool allowLong =(InpTradeDir!=SBS_SHORTONLY);
       bool allowShort=(InpTradeDir!=SBS_LONGONLY);
-      if(alignedDir!=0)
+      bool highConfirmedEarlier=g_haveHi &&
+                                g_barIndex>g_lastSwingHiConfirmBar;
+      bool lowConfirmedEarlier=g_haveLo &&
+                               g_barIndex>g_lastSwingLoConfirmBar;
+      bool refsConfirmedEarlier=highConfirmedEarlier && lowConfirmedEarlier;
+      long highKey=(long)g_lastSwingHiTime;
+      long lowKey=(long)g_lastSwingLoTime;
+      bool rawHigh=highConfirmedEarlier && bar.high>g_lastSwingHi;
+      bool rawLow=lowConfirmedEarlier && bar.low<g_lastSwingLo;
+
+      // Une cible reservee est exposee par SblAdvanceSetup. Sans reservation,
+      // la meche brute consomme directement la liquidite directionnelle.
+      if(rawHigh && !HasSetupForLiquidity(SBL_LONG,0,highKey))
+         SblRegistryConsume(g_consumed,SBL_LONG,highKey);
+      if(rawLow && !HasSetupForLiquidity(SBL_SHORT,0,lowKey))
+         SblRegistryConsume(g_consumed,SBL_SHORT,lowKey);
+
+      bool longPurge=lowConfirmedEarlier &&
+                     SblPurgeReintegrated(SBL_LONG,bar,
+                                          g_lastSwingHi,g_lastSwingLo);
+      bool shortPurge=highConfirmedEarlier &&
+                      SblPurgeReintegrated(SBL_SHORT,bar,
+                                           g_lastSwingHi,g_lastSwingLo);
+
+      if(longPurge)
+         if(inWindow && refsConfirmedEarlier && alignedDir==SBL_LONG &&
+            allowLong)
+            TryCreateSignalSetup(SBL_LONG,bar);
+      if(shortPurge)
+         if(inWindow && refsConfirmedEarlier && alignedDir==SBL_SHORT &&
+            allowShort)
+            TryCreateSignalSetup(SBL_SHORT,bar);
+
+      // Toute meche de purge consomme son origine, meme si biais, fenetre ou
+      // capacite refusent le setup. Si la creation a reussi, cet appel est un
+      // no-op ; une bougie double-side consomme donc cible et origine.
+      if(rawLow)
+         SblRegistryConsume(g_consumed,SBL_LONG,lowKey);
+      if(rawHigh)
+         SblRegistryConsume(g_consumed,SBL_SHORT,highKey);
+
+      // Un pivot externe confirme a cette cloture n'etait pas connaissable
+      // pendant la bougie. Il devient donc une reference seulement pour la
+      // suivante ; le core a deja pu l'utiliser comme pivot interne ci-dessus.
+      if(longPivot.present && longPivot.pivotTime>(long)g_lastSwingHiTime)
       {
-         if(alignedDir>0 && allowLong && g_haveHi && g_haveLo)
-         {
-            if(h1>g_lastSwingHi && !AlreadySwept(g_lastSwingHi,1))
-               AddSetup(1,g_lastSwingHi,g_lastSwingLo,g_lastSwingLo,h1,g_barIndex);
-         }
-         else if(alignedDir<0 && allowShort && g_haveLo && g_haveHi)
-         {
-            if(l1<g_lastSwingLo && !AlreadySwept(g_lastSwingLo,-1))
-               AddSetup(-1,g_lastSwingLo,g_lastSwingHi,l1,g_lastSwingHi,g_barIndex);
-         }
+         g_lastSwingHi=longPivot.price;
+         g_lastSwingHiTime=(datetime)longPivot.pivotTime;
+         g_lastSwingHiConfirmBar=longPivot.confirmedBar;
+         g_haveHi=true;
+      }
+      if(shortPivot.present && shortPivot.pivotTime>(long)g_lastSwingLoTime)
+      {
+         g_lastSwingLo=shortPivot.price;
+         g_lastSwingLoTime=(datetime)shortPivot.pivotTime;
+         g_lastSwingLoConfirmBar=shortPivot.confirmedBar;
+         g_haveLo=true;
       }
    }
 
-   if(InpShowWindows||InpShowMacros) RebuildLanes();
+   if(InpShowWindows && (rebuilding||processedBars>0))
+      RebuildLanes();
    UpdateDashboard();
    return(rates_total);
 }

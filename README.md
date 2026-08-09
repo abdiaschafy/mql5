@@ -2,23 +2,30 @@
 
 | Fichier | Type | Rôle |
 |---|---|---|
-| `ICT_Structure_OTE_EA.mq5` | **EA** (magic 260709) | Stratégie structure→OTE backtestable/live |
+| `ICT_Structure_OTE_EA.mq5` | **Source supprimé** (magic historique 260709) | Documentation et artefacts historiques seulement — section 1 |
 | `ICT_TopDown_Confluence.mq5` | **Indicateur** | Port MT5 **complet** de l'indicateur v2.5 (TV/NT) — section 2 |
 | `TA_RiskManager.mq5` | **EA panneau** (magic 260710) | **Risk Manager + trade manager** : portage MT5 du Trade Assistant NT — section 3 |
 | `ICT_SilverBullet_Strategy.mq5` | **EA** (magic 260711) | Stratégie **Silver Bullet** (modèle continuation) — section 4 |
 | `ICT_SilverBullet_Signals.mq5` | **Indicateur** | **Signaux Silver Bullet** (EMA10/20, triangles, killzones en bas, dashboard déplaçable) — section 4 |
 
-> ⚠️ **Recharger un EA/indicateur MT5** : recompiler **ne suffit pas** (l'image reste en cache pour la session), et le re-glisser sur le graphique non plus → **redémarrer le terminal**. L'EA se ré-attache seul avec le graphique, réglages DLL conservés.
+> ⚠️ **Recharger un EA/indicateur MT5** : recompiler **ne suffit pas** (l'image reste en cache pour la session), et le re-glisser sur le graphique non plus → **redémarrer le terminal**. Les composants attachés au graphique peuvent se recharger, mais leur état en mémoire n'est pas nécessairement reconstruit ; voir notamment la sécurité de redémarrage Silver Bullet en section 4.4.
 
 ---
 
-# 1. ICT Structure OTE EA
+# 1. Ancien ICT Structure OTE EA — archive
 
-`ICT_Structure_OTE_EA.mq5` — portage MT5 de la stratégie Pine `ICT_Structure_OTE_Strategy` (dossier `../pine/`). EA natif, **symbol-agnostic** (indices US : US500 / US30 / USTEC / DE30).
+> Le source `ICT_Structure_OTE_EA.mq5` a été supprimé à la révision
+> `9178b72`. Cette section, les presets et les rapports associés décrivent
+> uniquement l'ancien composant ; ils ne sont plus compilables ni reproductibles
+> depuis l'état courant du dépôt.
+
+Il s'agissait du portage MT5 de la stratégie Pine
+`ICT_Structure_OTE_Strategy` (dossier `../pine/`), conçu comme un EA
+symbol-agnostic pour US500 / US30 / USTEC / DE30.
 
 - **Magic** : `260709`
-- **Compilé** : 0 erreur / 0 warning
-- **Installé** : `...\MetaQuotes\Terminal\<hash>\MQL5\Experts\`
+- **Dernière compilation historique annoncée** : 0 erreur / 0 warning
+- **Ancien emplacement** : `...\MetaQuotes\Terminal\<hash>\MQL5\Experts\`
 - **Marché de référence** : US500 (équivalent du MES développé sur TradingView)
 
 ---
@@ -53,7 +60,7 @@ Architecture : structure/armement/entrée en **OnNewBar** ; break-even + flat en
 - **`InpSLBuffer` / `InpBEBuffer`** en **unités de prix** du symbole (pour US500 : points d'indice).
 - **Capital** : dimensionner le dépôt pour que le risque % donne un sizing sensé (voir `REPORTS.md`).
 
-## Backtest headless (reproductible)
+## Backtest headless historique (non reproductible sans restaurer le source)
 
 Fermer MT5 (1 instance/dossier de données), puis :
 ```
@@ -151,56 +158,264 @@ Désormais, comme les trade managers professionnels : **1 position** (lot total,
 
 # 4. ICT Silver Bullet — Stratégie (EA) + Signaux (indicateur)
 
-Portage MT5 (25/07/2026) de la stratégie et de l'indicateur NinjaTrader `ICTSilverBulletStrategy` / `ICTSilverBulletSignals` (dossier `../ninjatrader/`). **Modèle CONTINUATION** (corrigé) : biais stacking EMA10/20 H1+M5+M1 aligné + filtre tendance Daily → **sweep = PURGE de la liquidité OPPOSÉE** (LONG = purge d'un ancien swing HIGH ; SHORT = purge d'un swing LOW) → retracement dans le **discount/premium** → entrée **FVG / OTE / retest EMA** + MSS, dans les **killzones NY** (DST auto). SL structurel, TP1 2R (partiel) + BE, runner 4R/trailing. Risque dynamique **1 / 0,5 / 0,25 %**, max 3 positions, verrou DD 5 %/jour.
+La version 2.00 implémente un modèle de continuation strict décrit dans
+`LOGIQUE_ENTREES.md`. L'EA et l'indicateur s'appuient sur le même moteur de
+décision ; ils ne conservent plus deux interprétations séparées de la séquence
+d'entrée.
 
-## 4.1 EA `ICT_SilverBullet_Strategy.mq5` (magic 260711)
+## 4.1 Architecture v2
 
-- **Compilé** 0 erreur / 0 warning · installé dans `MQL5\Experts\`.
-- **⚠️ Compte HEDGING requis** (netting → les 3 setups fusionnent).
-- **Core/runner émulés en UNE position** : ouverture volume total (SL structurel + TP = 4R) ; à 2R → `PositionClosePartial` du core (`Tp1Percent`) + SL → BE ; si trailing → TP retiré puis stop suit l'extrême à `TrailR×R`.
-- **Sizing en lots** (`SYMBOL_TRADE_TICK_VALUE/SIZE`), risque dynamique via `FinalizeSetup` (PnL historique par position à la clôture totale → `riskLevel` 0/1/2).
-- **Heure NY DST auto** (`IsUSDST` : 2ᵉ dim. mars → 1ᵉʳ dim. nov). Logique 1×/barre.
-- **Configs validées OOS** : `../sets(ICT SB Signaux)/ICT_SB_DE30_M5.set` et `ICT_SB_XAUUSD_M5.set` (entrée EMA+MSS+Trend+killzones, FVG off, TP1R 2,5 / FinalR 6 / TrailR 2,5 / TP1% 30, SL 4 DAX / 8 or). `ICT_SB_FDXS.set` = ancien baseline négatif en OOS, obsolète.
+| Fichier | Responsabilité |
+|---|---|
+| `ICT_SilverBullet_Core.mqh` | Moteur déterministe sans dépendance MT5 : stacking, chronologie, FVG, Fibonacci, OTE, fenêtres, invalidations et décisions |
+| `ICT_SilverBullet_Strategy.mq5` | Adaptateur EA : données MT5, risque, ordres, contrôle du fill, sorties et état persistant |
+| `ICT_SilverBullet_Signals.mq5` | Adaptateur indicateur : reconstruction historique, tracés, dashboard, alertes et notifications ; aucun ordre |
 
-### Backtests + validation OOS (Exness CFD, M5, 50k fixe, `[TesterInputs]`)
+Le cœur est compilable directement par les tests C++. Il ne contient ni appel de
+trading ni dessin. Avec des événements de bougies, des paramètres **et un état
+initial** identiques, l'EA et l'indicateur appliquent les mêmes transitions du
+cœur jusqu'à la production d'une `SblDecision`. Leur cycle de vie peut ensuite
+diverger :
+l'indicateur retire le setup dès une décision de signal, tandis que l'EA peut
+revenir en attente si l'ordre ne peut pas être exécuté. L'indicateur ne
+connaît ni le verrou du compte, ni les positions, ni les fills et rejets du
+broker ; il reconstruit aussi un historique borné alors que l'EA ne reconstruit
+pas un setup perdu lors d'un redémarrage.
 
-> **⚠️ Correction 25/07** : les 1ers chiffres (« DE30 +44 359/PF 1,13, or −3 967 disqualifié ») étaient FAUX — `ExpertParameters=.set` en `/config` **ne charge pas** le .set → l'EA tournait sur ses défauts (FVG on, killzones OFF, equity composé). Bonne méthode = section **`[TesterInputs]`** du .ini.
+## 4.2 Logique d'entrée v2
 
-Balayage 486 configs/marché, découpage IS (2024→mi-25) / OOS (mi-25→mi-26) :
+Le contrat de biais est fixe : EMA10/EMA20 sur **D1 + H1 + M5 + M1**. Chaque
+timeframe doit être strictement aligné dans le même sens :
 
-| Marché | Baseline IS | Baseline OOS | r IS↔OOS | Verdict |
-|---|---|---|---|---|
-| **DE30** (tuné) | +44 489 · PF 2,62 | **+5 251 · PF 1,30** | 0,81 | ✅ **déployable** |
-| **XAUUSD** | +6 464 · PF 1,21 | **+2 417 · PF 1,09** | −0,79 | ✅ **déployable** (modeste) |
-| US500 | −2 347 · PF 0,94 | +6 518 · PF 1,29 | 0,92 | ❌ OOS-seulement |
-| US30 | −6 919 · PF 0,81 | +3 232 · PF 1,14 | 0,11 | ❌ IS négatif + bruit |
-| USTEC / BTCUSD / EURUSD / GBPUSD | — | — | — | ❌ (BTC 0/486 positif ; forex 64 configs testées) |
+```text
+LONG  : Close > EMA10 > EMA20 sur D1, H1, M5 et M1
+SHORT : Close < EMA10 < EMA20 sur D1, H1, M5 et M1
+```
 
-- **Critère : profitable dans les DEUX périodes** (edge stable) vs OOS-seulement (chance de régime). Seuls **DE30 + XAUUSD** passent (positifs IS **et** OOS). US500/US30 étaient négatifs/plats en in-sample → leur profit récent = régime, pas edge.
-- **Le réglage clé (DE30)** : TP1R 2,0→2,5 + TP1% 50→30 (« laisser courir ») fait passer l'OOS de négatif (baseline) à positif.
-- **Magnitude modeste** : le PF in-sample déflate ~2× en OOS (DAX 2,6→1,3). Attentes réelles : DE30 ~PF 1,3, or ~PF 1,1.
-- **⚠️ M5 obligatoire** : en M1 les SL serrés gonflent les lots → le spread du CFD dévore le R (DE30 M1 = −48 %).
-- **Caveats** : Model 1-min OHLC = spread fixe (live variable un peu moins bon) ; RR CFD limitant → un broker à spreads serrés améliorerait l'auto.
+Un stack neutre sur un seul timeframe interdit le setup et invalide ceux de même
+direction déjà en attente. Les inputs historiques permettant de désactiver
+l'alignement, le filtre D1 ou le MSS restent présents pour charger les anciens
+presets, mais doivent rester activés ; toute autre valeur provoque un refus
+d'initialisation. L'OTE est pareillement fixé à 62–79 %.
 
-## 4.2 Indicateur `ICT_SilverBullet_Signals.mq5` (v1.10)
+Séquence LONG, obligatoirement chronologique :
 
-Outil de signaux **sans ordre** (aide discrétionnaire), même modèle continuation que l'EA. **Compilé 0/0** · installé dans `MQL5\Indicators\`.
+1. verrouiller les derniers swings high et low confirmés ;
+2. purger le swing low par une mèche puis une clôture de réintégration stricte
+   (`Low < swing low AND Close > swing low`) et verrouiller l'extrême comme
+   Fibonacci 0 ;
+3. former et confirmer un swing high **interne** strict après la purge ;
+4. balayer par une mèche le swing high **externe**, qui est alors consommé ;
+5. confirmer un vrai croisement MSS par clôture au-dessus du swing high interne,
+   le déplacement minimal et une FVG haussière dont la Consequent Encroachment
+   est dans le discount ;
+6. figer Fibonacci 1 à l'extrême de la jambe, puis attendre une bougie ultérieure
+   qui retrace en discount et touche un déclencheur autorisé ;
+7. après cette clôture, envoyer un achat au marché si le prix exécutable se
+   trouve encore dans le discount.
 
-- **EMA10/20 tracées** (2 buffers DRAW_LINE bleu/rouge, `InpShowEma`) — base de la logique, rendue visible.
-- **Triangles** vert (LONG, code 233) / rouge (SHORT, code 234) au signal ; **lignes SL/TP1/TP** optionnelles (`InpShowSlTp`).
-- **Killzones = traits en bas** (OBJ_TREND horizontaux près de `CHART_PRICE_MIN`, London/AM/PM SteelBlue/SeaGreen/Goldenrod) + **macros** pointillées (3:45 / 10:45 / 14:45 NY), reconstruits sur `CHART_CHANGE` + nouvelle barre.
-- **Dashboard style NT déplaçable** : table 2 colonnes (82/178), header bleu + boutons **– (réduit) / ✕ (ferme)**, cellules valeur colorées (Biais / Tendance / Fenêtre / Signal) + **décompte de bougie** (OnTimer 1 s) ; drag par l'en-tête (`CHART_EVENT_MOUSE_MOVE`) ; défaut haut-centre.
-- **Heure NY EST** : offset **broker→GMT** auto-détecté (`TimeTradeServer` − `TimeGMT`, override `InpBrokerGmtHours`), puis `+ nyOff` (DST auto). Traite l'historique borné `InpMaxBarsBack` (défaut 3000).
+Le SHORT est le miroir exact : mèche au-dessus du swing high avec clôture de
+réintégration, swing low interne post-purge, sweep du swing low externe, MSS sous
+le niveau interne, CE de FVG en premium, retracement puis vente.
 
-### Adaptations / limites MT5 (documentées)
+La FVG de contexte est **toujours obligatoire**. `InpUseFVG=false` désactive
+uniquement la FVG comme déclencheur final ; il ne supprime pas cette condition de
+structure. Les déclencheurs disponibles sont FVG, OTE 62–79 % et retest EMA10.
+Le trigger OTE demande seulement que le range de la bougie intersecte la zone
+inclusive 62–79 % ; la bougie n'a pas à traverser toute cette zone.
+La CE vaut `(FvgLow + FvgHigh) / 2`. Une FVG traversant l'EQ reste valide si sa CE
+se trouve dans la moitié autorisée ; si elle déclenche l'entrée, cette CE doit
+être réellement touchée. La bougie doit présenter un rejet directionnel et
+clôturer dans la bonne moitié. L'exécution limite n'est pas implémentée.
 
-- Pas d'alpha par objet MT5 → l'« opacité 3 » de NT devient couleur + épaisseur.
-- Le dashboard est déplaçable en session mais **sa position n'est pas persistée** après recompile/reload (NT la sauvait) → repart au centre-haut.
-- Si les traits de killzone tombent à côté de l'heure NY → fixer `InpBrokerGmtHours` (offset GMT du serveur) au lieu de l'auto (99).
-- **Piège corrigé** : condition de chevauchement fenêtre/vue inversée dans `RebuildLanes` (`tLeft`/`tRight` permutés) → aucune killzone ne s'affichait ; corrigé en `b>=tLeft && a<=tRight` + clamp, objets au premier plan (`BACK=false`).
+Les références de liquidité sont identifiées par timestamp. Une origine purgée
+ou une cible balayée ne peut pas être recyclée indéfiniment. Le pivot interne
+utilisé par le MSS est confirmé par deux bougies de chaque côté et sa source doit
+être postérieure à la purge. Le sweep externe et le MSS peuvent être constatés
+sur une même bougie si ce pivot était déjà confirmé ; la bougie de purge ne peut
+jamais fournir ces événements.
 
-> Côté NT : les EMA10/20 ont aussi été ajoutées à `ICTSilverBulletSignals.cs` (input « Afficher EMA rapide/lente » + 2 AddPlot bleu/rouge) — elles n'y étaient pas tracées. **F5** dans NinjaTrader pour les activer.
+Le détecteur 2/2 produit séparément les événements pivot high et pivot low. Un
+pivot confirmé sur la bougie courante peut alimenter la structure interne d'un
+setup antérieur, mais il n'est promu comme nouvelle référence externe qu'après le
+traitement de cette bougie. Les événements de liquidité courants restent donc
+évalués contre les références connaissables avant sa clôture.
 
-## 4.3 Lancer un backtest headless (reproductible)
+## 4.3 Filtre horaire et heure New York
 
-Orchestration multi-symboles : `scratchpad/scan_markets.sh` (ferme le terminal → boucle de configs `/config` avec `ShutdownTerminal=1` → parse les rapports `.htm` UTF-16 → relance le terminal). Config type dans `[Tester]` : `Expert=ICT_SilverBullet_Strategy.ex5`, `ExpertParameters=ICT_SB_FDXS.set` (dans `MQL5\Presets\`), `Symbol=DE30`, `Period=M5`, `Model=1`, `FromDate/ToDate`, `Deposit=50000`, `ShutdownTerminal=1`.
+Les plages New York suivantes sont obligatoires et semi-ouvertes :
+
+| Session | Plage d'entrée NY |
+|---|---:|
+| London Killzone | `[02:00, 05:00)` |
+| New York Killzone | `[07:00, 10:00)` |
+| Asian Killzone | `[19:00, 22:00)` |
+
+Le timestamp testé est celui de la **clôture** de la bougie. La purge ne peut
+créer le setup que dans une de ces plages et toute la séquence doit rester dans
+la même instance `date NY + fenêtre`. Une clôture à 05:00, 10:00 ou 22:00, un
+passage à une autre fenêtre ou un trou de cotations entre deux fenêtres invalide
+le setup. `InpUseSbWindows` reste présent pour charger les anciens presets, mais
+doit valoir `true`, faute de quoi l'initialisation est refusée.
+
+La conversion suit `heure broker → UTC → New York`. `InpAutoDST=true` applique
+automatiquement EST/EDT à la date de la bougie et est obligatoire dans cette
+révision ; `false` est refusé à l'initialisation. Le fuseau serveur doit être
+choisi explicitement :
+
+| Mode broker | Usage |
+|---|---|
+| `AUTO_LIVE` | Déduit l'offset actuel avec `TimeTradeServer-TimeGMT` ; réservé au live, interdit dans le Strategy Tester et déconseillé pour reconstruire l'historique |
+| `FIXED` | Utilise `InpBrokerGmtHours` comme offset constant |
+| `EUROPE_DST` / `EU_DST` | Utilise `InpBrokerGmtHours` comme offset standard et ajoute l'heure d'été européenne ; mode par défaut, adapté notamment à un serveur GMT+2/GMT+3 |
+
+Un mauvais mode broker décale les fenêtres même si le DST New York est correct.
+
+## 4.4 EA `ICT_SilverBullet_Strategy.mq5` (v2.00, magic 260711)
+
+- **Compte HEDGING obligatoire** : l'initialisation est refusée en netting.
+- Entrée au marché au premier tick suivant la confirmation clôturée, uniquement
+  si ce tick appartient encore à la même instance de fenêtre New York. Le volume
+  est calculé avec `OrderCalcProfit`, puis prix, volume et risque réels sont
+  réconciliés depuis le deal ou la position. Un fill hors discount/premium, un
+  sur-risque ou une protection non applicable déclenche une fermeture de sécurité.
+- SL structurel au-delà de Fibonacci 0. Baseline recommandée et valeurs par
+  défaut : TP1 à 2R, partiel 50 %, objectif final 4R et trailing 2R. Après TP1,
+  le reliquat passe à break-even ; avec
+  `InpTrailRunner=true`, le TP final est retiré et remplacé par le trailing.
+- TP1, break-even et trailing sont contrôlés à chaque tick. Si le volume ne permet
+  pas deux fractions conformes au pas/minimum broker, aucun partiel n'est envoyé,
+  mais le passage à break-even reste prévu à TP1.
+- Après une reconnexion, les bougies manquées sont rejouées dans l'ordre pour
+  remettre la machine d'état à niveau, mais une opportunité historique n'est
+  jamais exécutée au prix courant. Seule la dernière clôture encore récente peut
+  envoyer un ordre, et une purge appartenant à un ancien jour New York ne peut
+  pas créer aujourd'hui un nouveau setup.
+- Risque dynamique par défaut : 1 %, puis 0,5 % après une perte, puis 0,25 % après
+  une seconde perte jusqu'au prochain gain. `InpMaxPositions=3` plafonne les
+  positions et setups actifs.
+- Si une décision ne peut pas être exécutée à cause de la capacité, du risque ou
+  d'un prix marché sorti de la zone, le setup déjà formé revient en attente d'un
+  nouveau retracement dans la même fenêtre ; cette impossibilité ne l'invalide
+  pas à elle seule.
+- Après une requête d'ouverture au résultat incertain, l'EA conserve l'éventuel
+  ticket d'ordre et l'identifiant de requête, bloque une place de capacité et
+  recherche l'exécution réelle. Un reliquat d'ordre d'entrée est annulé et cette
+  annulation est réconciliée avant toute fermeture de sécurité. Une position
+  apparue tardivement est fermée et la décision n'est pas renvoyée. Les clôtures
+  TP1/de sécurité et les modifications SL/TP incertaines sont elles aussi
+  sérialisées jusqu'à confirmation du volume, des protections ou de l'état
+  historique. `InpBrokerReconcileSeconds=120` borne l'attente lorsqu'il n'existe
+  aucun ordre actif ni preuve d'exécution.
+- Le verrou journalier utilise le PnL **réalisé** des positions suivies, frais et
+  swaps inclus, puis se réinitialise à minuit New York. Il bloque les nouvelles
+  entrées ; ce n'est ni un contrôle du drawdown latent ni une fermeture forcée des
+  positions déjà ouvertes.
+
+Hors Strategy Tester, le registre des liquidités consommées, le jour NY, le PnL
+réalisé, le niveau de risque et le verrou journalier sont sauvegardés par
+serveur/compte/magic/symbole dans `Common\Files`. L'écriture passe par un fichier
+temporaire puis un remplacement. Le registre conserve au maximum 512 timestamps
+par direction. Dans le testeur, chaque exécution repart volontairement d'un état
+neuf.
+
+### Sécurité au redémarrage
+
+Les setups en attente et l'état détaillé de gestion d'une position ne sont pas
+reconstruits après rechargement ou redémarrage :
+
+- un setup en attente est abandonné ; sa liquidité déjà consommée reste mémorisée ;
+- le SL et le TP présents chez le broker restent actifs ;
+- si une position ou un ordre actif portant le même magic et le même symbole
+  existe au démarrage, l'EA bloque toute nouvelle entrée jusqu'à sa résolution ;
+- TP1, break-even et trailing de cette position préexistante ne sont pas repris
+  automatiquement.
+
+Il faut donc éviter de redémarrer l'EA avec une position ou une requête Silver
+Bullet active, particulièrement si le TP a déjà été retiré au profit du trailing.
+
+## 4.5 Indicateur `ICT_SilverBullet_Signals.mq5` (v2.00)
+
+L'indicateur ne passe aucun ordre. Il rejoue le moteur partagé pour afficher une
+aide discrétionnaire :
+
+- EMA10/20 via deux buffers `DRAW_LINE` ;
+- triangles LONG/SHORT et, en option, lignes SL/TP1/TP calculées sur le prix de
+  clôture du signal ;
+- traits des trois fenêtres London 02:00–05:00, New York 07:00–10:00 et Asia
+  19:00–22:00 ;
+- dashboard déplaçable et réductible : biais, tendance D1, fenêtre, dernier signal
+  et compte à rebours de la bougie ;
+- alertes et notifications push uniquement pour un nouveau signal live.
+
+`InpShowMacros` est conservé uniquement pour charger les anciens presets et n'a
+plus d'effet. Les anciennes lanes de macros ne sont ni des fenêtres d'entrée ni
+des éléments affichés par la v2.
+
+La sortie historique est bornée par `InpMaxBarsBack` (3000 par défaut), avec un
+préchauffage des swings de `InpSwingWarmupBars` (500). Le registre de liquidité de
+l'indicateur est reconstruit sur cet historique borné et n'est pas sauvegardé dans
+le fichier d'état de l'EA. Le dashboard retrouve sa position par défaut après un
+rechargement. Les objets MT5 n'offrant pas la même transparence que NinjaTrader,
+les sessions utilisent couleurs et épaisseurs sans alpha équivalent.
+
+## 4.6 Anciens presets et backtests
+
+> **⚠️ Les résultats IS/OOS publiés avant la v2 mesuraient une autre logique
+> d'entrée. Ils ne valident ni les performances, ni les marchés, ni les timeframes
+> de la version actuelle et ne doivent pas servir de justification de déploiement.**
+
+Les fichiers historiques suivants sont conservés comme points de départ de
+configuration seulement :
+
+- `sets/sets(ICT SB Signaux)/ICT_SB_DE30_M5.set` ;
+- `sets/sets(ICT SB Signaux)/ICT_SB_XAUUSD_M5.set` ;
+- `sets/sets(ICT SB Signaux)/ICT_SB_FDXS.set`.
+
+Les presets DE30 et XAUUSD fixent encore les sorties historiques 2,5R / 30 % /
+6R / trailing 2,5R ; elles ne sont pas les défauts v2 et n'ont pas été revalidées
+avec le nouveau moteur. Le preset FDXS ne fixe pas ces valeurs et hérite donc des
+défauts v2. Dans les trois presets, `InpUseFVG=false` signifie seulement « pas de
+trigger FVG » ; la FVG de contexte reste obligatoire.
+
+Une nouvelle validation doit au minimum recompiler la v2, fixer le mode et
+l'offset broker, charger les paramètres via `[TesterInputs]`, puis rejouer les
+périodes IS et OOS. L'ancienne méthode headless fondée sur
+`ExpertParameters=.set` n'est pas considérée fiable dans ce projet. `OnTester()`
+écrit les statistiques v2 dans un CSV `SBopt_v2_*.csv` sous `Common\Files`.
+
+## 4.7 Tests et vérification
+
+Depuis la racine du projet :
+
+```sh
+make test
+```
+
+Cette commande compile le moteur partagé en C++17 strict, exécute les scénarios
+LONG/SHORT et les cas de rejet, puis lance les contrats structurels vérifiant que
+l'EA et l'indicateur utilisent bien ce moteur.
+
+```sh
+make verify
+```
+
+`make verify` ajoute la compilation réelle des deux `.mq5` par MetaEditor dans un
+répertoire temporaire. Sur l'installation macOS prévue par le script, MetaEditor
+est lancé sous Wine. Les chemins peuvent être adaptés avec `MT5_WINE_BIN`,
+`MT5_WINEPREFIX` et `MT5_METAEDITOR`.
+
+Commandes ciblées :
+
+```sh
+make test-core       # tests déterministes du moteur
+make test-contracts  # contrats statiques EA/indicateur/cœur
+make test-mql5       # compilation MetaEditor uniquement
+```
+
+La suite couvre notamment le stacking strict, la purge réintégrée, les pivots
+internes post-purge, la séparation sweep externe/MSS, la CE de FVG, OTE, EMA,
+les liquidités consommées, les 540 minutes de fenêtres, leur identité et les
+transitions DST US/Europe. Les tests de contrat restent statiques et la
+compilation MetaEditor ne remplace pas un backtest v2, un test de redémarrage ni
+des essais de fills, rejets et fermetures partielles avec un broker réel.

@@ -5,6 +5,15 @@
 - Document précédent : `AUDIT.md`, conservé comme audit historique antérieur à la suppression
 - Fichier supprimé : `ICT_Structure_OTE_EA.mq5` (434 lignes)
 
+> **Statut du document : archive de la révision `9178b72`.** Depuis ce
+> contre-audit, Silver Bullet a été remplacé par la v2 décrite dans
+> `LOGIQUE_ENTREES.md` : moteur partagé, horloge historique explicite, gestion
+> des sorties à chaque tick, fill/risque réconciliés, registre persistant et
+> reprise bloquée en présence d'une position non reconstructible. Les constats
+> visant les autres composants, notamment `TA_RiskManager.mq5`, n'ont pas été
+> corrigés ni ré-audités dans ce chantier. La compilation et les tests v2 ne
+> constituent pas une homologation live ; voir `README.md`, section 4.7.
+
 ## 1. Verdict exécutif
 
 La suppression de `ICT_Structure_OTE_EA.mq5` retire bien du périmètre plusieurs défauts relevés dans le premier audit. Elle ne rend cependant pas la solution apte au live autonome.

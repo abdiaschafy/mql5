@@ -507,14 +507,14 @@ Stack D1/confirmations baissier
 
 La logique fournie permet de définir clairement la direction et la chronologie. Les décisions suivantes restent à fixer avant une implémentation sans ambiguïté :
 
-1. le stacking complet exige-t-il obligatoirement D1 + H1 + M5 + M1, ou seulement D1 avec certaines confirmations facultatives ?
-2. la purge doit-elle être validée par un simple dépassement de mèche ou par une clôture de réintégration ?
-3. le MSS doit-il casser le swing high/low de référence ou une structure interne formée après la purge ?
-4. une FVG est-elle valide lorsque seule sa Consequent Encroachment est en discount/premium, ou toute la zone doit-elle y être contenue ?
-5. l'entrée finale doit-elle être une limite dans la zone ou un marché après confirmation ?
-6. un setup formé hors fenêtre reste-t-il valide pour la prochaine Killzone/Macro ?
-7. les deux fenêtres asiatiques doivent-elles être séparées fonctionnellement ou traitées comme une plage continue 19:00–23:59 ?
-8. les règles de sortie provisoires doivent-elles être conservées telles quelles ?
+1. le stacking complet exige-t-il obligatoirement D1 + H1 + M5 + M1, ou seulement D1 avec certaines confirmations facultatives ? (exige obligatoirement D1+H1+M5+M1)
+2. la purge doit-elle être validée par un simple dépassement de mèche ou par une clôture de réintégration ? (Par une cloture)
+3. le MSS doit-il casser le swing high/low de référence ou une structure interne formée après la purge ? (Le MSS doit casser le SH/SL d'une structure interne formee apres la purge)
+4. une FVG est-elle valide lorsque seule sa Consequent Encroachment est en discount/premium, ou toute la zone doit-elle y être contenue ? (Oui ce FVG est valide)
+5. l'entrée finale doit-elle être une limite dans la zone ou un marché après confirmation ? (L'entree doit etre au marche)
+6. un setup formé hors fenêtre reste-t-il valide pour la prochaine Killzone/Macro ? (Non les conditions doivent etre respectees)
+7. les deux fenêtres asiatiques doivent-elles être séparées fonctionnellement ou traitées comme une plage continue 19:00–23:59 ? ( elles doivent etre separees)
+8. les règles de sortie provisoires doivent-elles être conservées telles quelles ? ( qu'est ce que tu me conseille?)
 
 Ces points n'empêchent pas de comprendre la logique générale, mais ils doivent être tranchés avant de modifier le moteur de trading.
 
@@ -526,4 +526,8 @@ La logique cible est comprise comme suit :
 - **SHORT** : biais et stacking baissiers, purge préalable du swing high, prise du swing low, déplacement, nouveau MSS, FVG baissière en premium, puis retracement en premium pendant une fenêtre autorisée ;
 - **aucun stack complet** : aucun trade et aucun signal ;
 - **Fibonacci 0** : origine verrouillée au point de purge ;
-- **horaires autorisés** : 03:00–04:15, 10:00–11:15, 14:00–15:15, 19:00–21:00 et 21:00–23:59, en heure de New York.
+- **horaires autorisés** :  
+* Asian killzone: 07:00 PM - 10:00 PM
+ * London killzone: 02:00 AM - 05:00 AM
+ * New York killzone: 07:00 AM - 10:00 AM
+en heure de New York.

@@ -92,7 +92,7 @@ int     hAtr = INVALID_HANDLE;        // SL auto par ATR (volatilite du symbole)
 bool    trailOn = false;              // trailing stop (toggle du panneau, persiste)
 
 // suivi des ordres en attente du magic : draguer UNE ligne d'entree deplace
-// TOUT le groupe (les parts empilees au meme prix) — SL/TP suivent du meme
+// TOUT le groupe (les parts empilees au meme prix) - SL/TP suivent du meme
 // delta (distances conservees), rien n'est cree ni laisse derriere.
 ulong   pdId[50];
 double  pdEn[50], pdSl[50], pdTp[50];
@@ -626,7 +626,7 @@ void Edit(string name, int x, int y, int w, int h, string txt)
    ObjectSetInteger(0, n, OBJPROP_HIDDEN, true);
 }
 // reduire = SUPPRIMER les lignes (seul le bandeau reste) ; agrandir = tout
-// reconstruire — le masquage par OBJPROP_TIMEFRAMES cassait l'ordre de rendu
+// reconstruire - le masquage par OBJPROP_TIMEFRAMES cassait l'ordre de rendu
 // (les fonds repassaient au-dessus des textes -> inscriptions invisibles).
 string savLot = "0", savSl = "0", savTp = "0";
 void CollapsePanel()
@@ -919,7 +919,7 @@ void ManagePartialCloses()
 
 // ===== GESTION DU GROUPE DE POSITIONS (magic, ce symbole) =====
 // 1) SCALING-IN : une nouvelle position qui s'ajoute a un groupe existant du
-//    meme sens ne vit pas sa vie — le groupe est CONSOLIDE : prix moyen pondere,
+//    meme sens ne vit pas sa vie - le groupe est CONSOLIDE : prix moyen pondere,
 //    SL UNIQUE (celui du groupe), TP re-ancres sur le prix moyen en conservant
 //    le RR de chaque part (comportement du TA NinjaTrader V5).
 // 2) SYNC SL : draguer le SL d'UNE position aligne tout le groupe du meme sens.
@@ -1397,7 +1397,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
       Alert("TA RM : PAUSE - " + IntegerToString(lossStreak) + " pertes consecutives, confirmation requise");
 
    MqlDateTime s; TimeToStruct(TimeCurrent(), s);
-   // 14 champs texte apres la date/heure (le dernier = compte) — NE PAS en oublier :
+   // 14 champs texte apres la date/heure (le dernier = compte) - NE PAS en oublier :
    // un %s manquant fait sauter la colonne Compte (bug corrige ici).
    string line = StringFormat("%04d-%02d-%02d;%02d:%02d:%02d;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s",
       s.year, s.mon, s.day, s.hour, s.min, s.sec,

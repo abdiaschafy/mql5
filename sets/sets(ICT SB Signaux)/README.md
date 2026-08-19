@@ -1,4 +1,4 @@
-# Sets ICT Silver Bullet — configs de trading
+# Sets ICT Silver Bullet - configs de trading
 
 **Modèle** : continuation ICT (purge de la liquidité opposée → retracement dans le discount/premium → entrée FVG / OTE / retest EMA + MSS, dans les killzones NY). Biais = stacking EMA10/20 multi-TF aligné + filtre tendance Daily.
 
@@ -8,7 +8,7 @@
 |---|---|---|---|---|---|---|---|
 | **FDXS (Micro DAX)** | EMA+MSS | +35 613 $ | 1,26 | −12 204 $ (−24 %) | 2,9 | 1,46 | ✅ **AUTO** (forward-test Sim) |
 | **MGC (Micro Or)** | FVG+EMA+MSS | +33 290 $ | 1,13 | **−31 267 $ (−63 %)** | 1,06 | 0,68 | ⚠️ **DISCRÉTIONNAIRE seulement** |
-| MNQ / MYM / MES | — | négatif / marginal | <1,1 | — | — | — | ❌ écartés |
+| MNQ / MYM / MES | - | négatif / marginal | <1,1 | - | - | - | ❌ écartés |
 
 **Pourquoi FDXS en auto et MGC à la main :**
 - **FDXS** : DD contenu (−24 %), le money management fonctionne (réduit le risque en drawdown), courbe qui finit près des sommets.
@@ -18,7 +18,7 @@
 - **`FDXS.md`** → set STRATÉGIE AUTO (forward-test en Sim démo).
 - **`MGC.md`** → set INDICATEUR SIGNAUX (discrétionnaire).
 
-## Portage MT5 (25/07) — EA `ICT_SilverBullet_Strategy.mq5` + indicateur `ICT_SilverBullet_Signals.mq5`
+## Portage MT5 (25/07) - EA `ICT_SilverBullet_Strategy.mq5` + indicateur `ICT_SilverBullet_Signals.mq5`
 
 Exécution **M5** (le M1 est non-viable : SL serrés → lots gonflés → le spread du CFD dévore le R). Compte **HEDGING** requis.
 
@@ -33,8 +33,8 @@ Les premiers backtests MT5 (« DE30 seul gagnant +44 359 / PF 1,13 ; or −3 967
 | **XAUUSD** | +6 464 · PF 1,21 | **+2 417 · PF 1,09** | −0,79 | ✅ **DÉPLOYABLE** (modeste, robuste) |
 | US500 | −2 347 · PF 0,94 | +6 518 · PF 1,29 | 0,92 | ❌ profitable OOS **seulement** |
 | US30 | −6 919 · PF 0,81 | +3 232 · PF 1,14 | 0,11 | ❌ négatif IS + sélection = bruit |
-| USTEC / BTCUSD | — | — | — | ❌ (BTC 0/486 config positive) |
-| EURUSD / GBPUSD (forex) | — | — | — | ❌ pas d'edge (64 configs testées) |
+| USTEC / BTCUSD | - | - | - | ❌ (BTC 0/486 config positive) |
+| EURUSD / GBPUSD (forex) | - | - | - | ❌ pas d'edge (64 configs testées) |
 
 **Critère de décision = profitable dans les DEUX périodes (edge stable) vs OOS-seulement (chance de régime).**
 - **DE30** ✅ : positif IS **et** OOS, classement qui se transfère. Config `ICT_SB_DE30_M5.set`.

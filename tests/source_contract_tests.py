@@ -207,6 +207,347 @@ class SharedCoreContractTests(unittest.TestCase):
                 f"{component} must pass the shared internal pivot to the core",
             )
 
+    def test_indicator_exposes_and_forwards_internal_pivot_strength(self) -> None:
+        self.assertRegex(
+            self.signals,
+            r"input\s+int\s+InpInternalPivotStrength\s*=\s*1\s*;",
+        )
+        self.assertRegex(
+            self.signals,
+            r"input\s+int\s+InpExternalPivotStrength\s*=\s*2\s*;",
+        )
+        self.assertRegex(
+            self.signals,
+            r"input\s+bool\s+InpAllowMssBeforeTarget\s*=\s*false\s*;",
+        )
+        self.assertRegex(
+            self.signals,
+            r"input\s+bool\s+InpAllowTargetBeforeInternalPivot\s*=\s*"
+            r"false\s*;",
+        )
+        self.assertRegex(
+            self.signals,
+            r"input\s+bool\s+InpRequireDirectionalRejection\s*=\s*true\s*;",
+        )
+        self.assertRegex(
+            self.signals,
+            r"input\s+int\s+InpMaxFvgCandidates\s*=\s*1\s*;",
+        )
+
+        init_start = self.signals.index("int OnInit(")
+        init_end = self.signals.index("void OnDeinit(", init_start)
+        validation = self.signals[init_start:init_end]
+        self.assertRegex(
+            validation,
+            r"InpInternalPivotStrength\s*<\s*1\s*\|\|\s*"
+            r"InpInternalPivotStrength\s*>\s*2",
+        )
+        self.assertRegex(
+            validation,
+            r"InpExternalPivotStrength\s*<\s*1\s*\|\|\s*"
+            r"InpExternalPivotStrength\s*>\s*2",
+        )
+        self.assertRegex(
+            validation,
+            r"InpMaxFvgCandidates\s*<\s*1\s*\|\|\s*"
+            r"InpMaxFvgCandidates\s*>\s*4",
+        )
+        self.assertIn(
+            "g_coreConfig.maxFvgCandidates=InpMaxFvgCandidates",
+            validation,
+        )
+        self.assertIn(
+            "g_coreConfig.allowMssBeforeTarget=InpAllowMssBeforeTarget",
+            validation,
+        )
+        self.assertRegex(
+            validation,
+            r"g_coreConfig\.allowTargetBeforeInternalPivot\s*=\s*"
+            r"InpAllowTargetBeforeInternalPivot",
+        )
+        self.assertRegex(
+            validation,
+            r"g_coreConfig\.requireDirectionalRejection\s*=\s*"
+            r"InpRequireDirectionalRejection",
+        )
+
+        pivot_start = self.signals.index("SblBar externalTwoBefore")
+        pivot_end = self.signals.index("SblBar bar;", pivot_start)
+        pivot_logic = self.signals[pivot_start:pivot_end]
+        for prefix, strength in (
+            ("external", "InpExternalPivotStrength"),
+            ("internal", "InpInternalPivotStrength"),
+        ):
+            with self.subTest(buffer=prefix):
+                self.assertIn(f"if({strength}==1)", pivot_logic)
+                self.assertIn(
+                    f"{prefix}Candidate=pivotBars[3]", pivot_logic
+                )
+                self.assertIn(
+                    f"{prefix}OneAfter=pivotBars[4]", pivot_logic
+                )
+                self.assertIn(
+                    f"{prefix}TwoAfter=pivotBars[4]", pivot_logic
+                )
+
+        pairs = (
+            (
+                "SBL_LONG",
+                "InpExternalPivotStrength",
+                "external",
+                "externalHighPivot",
+            ),
+            (
+                "SBL_SHORT",
+                "InpExternalPivotStrength",
+                "external",
+                "externalLowPivot",
+            ),
+            (
+                "SBL_LONG",
+                "InpInternalPivotStrength",
+                "internal",
+                "internalHighPivot",
+            ),
+            (
+                "SBL_SHORT",
+                "InpInternalPivotStrength",
+                "internal",
+                "internalLowPivot",
+            ),
+        )
+        for direction, strength, prefix, output in pairs:
+            with self.subTest(direction=direction, role=prefix):
+                self.assertRegex(
+                    pivot_logic,
+                    rf"SblDetectInternalPivot\(\s*{direction}\s*,\s*"
+                    rf"{strength}\s*,\s*{prefix}TwoBefore\s*,\s*"
+                    rf"{prefix}OneBefore\s*,\s*{prefix}Candidate\s*,\s*"
+                    rf"{prefix}OneAfter\s*,\s*{prefix}TwoAfter\s*,\s*"
+                    rf"{output}\s*\)",
+                    "external and internal pivots must keep independent buffers",
+                )
+
+        self.assertEqual(pivot_logic.count("InpExternalPivotStrength"), 3)
+        self.assertEqual(pivot_logic.count("InpInternalPivotStrength"), 3)
+
+        self.assertIn(
+            "SblRejectAmbiguousDualPivot(externalHighPivot,externalLowPivot)",
+            self.signals,
+        )
+        self.assertIn(
+            "SblRejectAmbiguousDualPivot(internalHighPivot,internalLowPivot)",
+            self.signals,
+        )
+        self.assertIn("setupPivot=internalHighPivot", self.signals)
+        self.assertIn("setupPivot=internalLowPivot", self.signals)
+        self.assertIn("g_lastSwingHi=externalHighPivot.price", self.signals)
+        self.assertIn("g_lastSwingLo=externalLowPivot.price", self.signals)
+        self.assertRegex(
+            self.signals,
+            r'return\s+InpAllowMssBeforeTarget\s*\?\s*"FLEXIBLE"\s*:\s*"STRICT"',
+        )
+        self.assertRegex(
+            self.signals,
+            r'return\s+InpAllowTargetBeforeInternalPivot\s*\?\s*'
+            r'"FLEXIBLE"\s*:\s*"STRICT"',
+        )
+        self.assertRegex(
+            self.signals,
+            r'return\s+InpRequireDirectionalRejection\s*\?\s*'
+            r'"STRICT"\s*:\s*"FLEXIBLE"',
+        )
+        self.assertIn(
+            'StringFormat("ICT SBS P%d/%d EP%d/%d MSS:%s C/P:%s DR:%s FVC:%d"',
+            self.signals,
+        )
+        self.assertIn(
+            'StringFormat("SB P%d/%d EP%d/%d MSS:%s C/P:%s DR:%s FVC:%d"',
+            self.signals,
+        )
+
+    def test_strategy_exposes_and_records_internal_pivot_strength(self) -> None:
+        self.assertRegex(
+            self.strategy,
+            r"input\s+int\s+InpInternalPivotStrength\s*=\s*1\s*;",
+        )
+        self.assertRegex(
+            self.strategy,
+            r"input\s+int\s+InpExternalPivotStrength\s*=\s*2\s*;",
+        )
+        self.assertRegex(
+            self.strategy,
+            r"input\s+bool\s+InpAllowMssBeforeTarget\s*=\s*false\s*;",
+        )
+        self.assertRegex(
+            self.strategy,
+            r"input\s+bool\s+InpAllowTargetBeforeInternalPivot\s*=\s*false\s*;",
+        )
+        self.assertRegex(
+            self.strategy,
+            r"input\s+bool\s+InpRequireDirectionalRejection\s*=\s*true\s*;",
+        )
+        self.assertRegex(
+            self.strategy,
+            r"input\s+int\s+InpMaxFvgCandidates\s*=\s*1\s*;",
+        )
+        self.assertRegex(
+            self.strategy,
+            r"input\s+int\s+InpEntryEqToleranceTicks\s*=\s*0\s*;",
+        )
+
+        validation_start = self.strategy.index("bool InputsAreValid(")
+        validation_end = self.strategy.index(
+            "string RegistryFileName(", validation_start
+        )
+        validation = self.strategy[validation_start:validation_end]
+        self.assertIn("InpInternalPivotStrength!=1", validation)
+        self.assertIn("InpInternalPivotStrength!=2", validation)
+        self.assertIn("InpExternalPivotStrength!=1", validation)
+        self.assertIn("InpExternalPivotStrength!=2", validation)
+        self.assertRegex(
+            validation,
+            r"InpMaxFvgCandidates\s*<\s*1\s*\|\|\s*"
+            r"InpMaxFvgCandidates\s*>\s*4",
+        )
+        self.assertRegex(
+            validation,
+            r"InpEntryEqToleranceTicks\s*<\s*0\s*\|\|\s*"
+            r"InpEntryEqToleranceTicks\s*>\s*50",
+        )
+
+        process_start = self.strategy.index("bool ProcessClosedBar(")
+        process_end = self.strategy.index(
+            "//+------------------------------------------------------------------+\n"
+            "//| OnTick",
+            process_start,
+        )
+        process = self.strategy[process_start:process_end]
+        self.assertIn("referenceCandidate=oneAfter", process)
+        self.assertIn("referenceOneAfter=newest", process)
+        self.assertIn("internalCandidate=oneAfter", process)
+        self.assertIn("internalOneAfter=newest", process)
+
+        pairs = (
+            ("SBL_LONG", "referenceHighPivot", "internalHighPivot"),
+            ("SBL_SHORT", "referenceLowPivot", "internalLowPivot"),
+        )
+        for direction, reference_output, internal_output in pairs:
+            with self.subTest(direction=direction, role="reference"):
+                self.assertRegex(
+                    process,
+                    rf"SblDetectInternalPivot\(\s*{direction}\s*,\s*"
+                    r"InpExternalPivotStrength\s*,\s*"
+                    r"referenceTwoBefore\s*,\s*referenceOneBefore\s*,\s*"
+                    r"referenceCandidate\s*,\s*referenceOneAfter\s*,\s*"
+                    r"referenceTwoAfter\s*,\s*"
+                    rf"{reference_output}\s*\)",
+                    "external references must use their independent strength",
+                )
+            with self.subTest(direction=direction, role="internal"):
+                self.assertRegex(
+                    process,
+                    rf"SblDetectInternalPivot\(\s*{direction}\s*,\s*"
+                    r"InpInternalPivotStrength\s*,\s*internalTwoBefore\s*,\s*"
+                    r"internalOneBefore\s*,\s*internalCandidate\s*,\s*"
+                    r"internalOneAfter\s*,\s*internalTwoAfter\s*,\s*"
+                    rf"{internal_output}\s*\)",
+                    "only setup pivots may use the configurable strength",
+                )
+
+        self.assertEqual(process.count("SblRejectAmbiguousDualPivot("), 2)
+        self.assertIn("setupPivot=internalHighPivot", process)
+        self.assertIn("setupPivot=internalLowPivot", process)
+        self.assertIn(
+            "UpdateReferenceSwings(referenceHighPivot,referenceLowPivot)",
+            process,
+        )
+        self.assertNotIn("UpdateReferenceSwings(internal", process)
+        self.assertIn(
+            "config.allowMssBeforeTarget=InpAllowMssBeforeTarget",
+            self.strategy,
+        )
+        self.assertIn(
+            "config.allowTargetBeforeInternalPivot="
+            "InpAllowTargetBeforeInternalPivot",
+            self.strategy,
+        )
+        self.assertIn(
+            "config.requireDirectionalRejection="
+            "InpRequireDirectionalRejection",
+            self.strategy,
+        )
+        self.assertIn(
+            "config.maxFvgCandidates=InpMaxFvgCandidates",
+            self.strategy,
+        )
+
+        tester_start = self.strategy.index("double OnTester()")
+        tester = self.strategy[tester_start:]
+        self.assertIn(
+            "SBopt_v2_%s_P%d_EP%d_MBT%d_TBI%d_DR%d_FVC%d_ET%d_", tester
+        )
+        self.assertRegex(
+            tester,
+            r"FileWrite\(file,_Symbol,InpInternalPivotStrength,\s*"
+            r"InpExternalPivotStrength,\s*"
+            r"\(int\)InpAllowMssBeforeTarget,\s*"
+            r"\(int\)InpAllowTargetBeforeInternalPivot,\s*"
+            r"\(int\)InpRequireDirectionalRejection,\s*"
+            r"InpMaxFvgCandidates,\s*InpEntryEqToleranceTicks,",
+        )
+
+    def test_strategy_entry_eq_tolerance_is_execution_only(self) -> None:
+        bounds_start = self.strategy.index("int BoundEntryEqToleranceTicks(")
+        bounds_end = self.strategy.index(
+            "void ObserveEntryValueAreaGap(", bounds_start
+        )
+        bounds = self.strategy[bounds_start:bounds_end]
+        self.assertIn("if(requested<0) return 0", bounds)
+        self.assertIn("if(requested>50) return 50", bounds)
+        self.assertRegex(
+            bounds,
+            r"tolerance\s*=\s*BoundEntryEqToleranceTicks\(\s*"
+            r"InpEntryEqToleranceTicks\s*\)\s*\*\s*tickSize",
+        )
+        self.assertRegex(
+            bounds,
+            r"setup\.direction==SBL_LONG[\s\S]*?lower=setup\.fib0;\s*"
+            r"upper=equilibrium\+tolerance;",
+            "LONG may extend only beyond EQ; fib0 must remain a hard bound",
+        )
+        self.assertRegex(
+            bounds,
+            r"setup\.direction==SBL_SHORT[\s\S]*?"
+            r"lower=equilibrium-tolerance;\s*upper=setup\.fib0;",
+            "SHORT may extend only beyond EQ; fib0 must remain a hard bound",
+        )
+
+        enter_start = self.strategy.index("bool EnterSetup(")
+        enter_end = self.strategy.index(
+            "//====================== GESTION DES POSITIONS", enter_start
+        )
+        enter = self.strategy[enter_start:enter_end]
+        self.assertIn(
+            "ExecutableEntryInValueArea(setup.logic,entry)", enter
+        )
+        self.assertIn(
+            "ExecutableEntryInValueArea(setup.logic,fill)", enter
+        )
+        self.assertNotIn("SblPriceInValueArea(", enter)
+
+        process_start = self.strategy.index("bool ProcessClosedBar(")
+        process_end = self.strategy.index(
+            "//+------------------------------------------------------------------+\n"
+            "//| OnTick",
+            process_start,
+        )
+        self.assertNotIn(
+            "InpEntryEqToleranceTicks",
+            self.strategy[process_start:process_end],
+            "closed-bar Core decisions must remain strict",
+        )
+
     def test_windows_are_mandatory_in_both_adapters(self) -> None:
         for source in (self.strategy, self.signals):
             self.assertIn("!InpUseSbWindows", source)
@@ -246,13 +587,14 @@ class SharedCoreContractTests(unittest.TestCase):
     def test_new_external_pivots_do_not_rewrite_the_current_bar_history(self) -> None:
         strategy_events = self.strategy.index("bool rawHigh=highAvailable")
         strategy_update = self.strategy.index(
-            "UpdateReferenceSwings(highPivot,lowPivot)", strategy_events
+            "UpdateReferenceSwings(referenceHighPivot,referenceLowPivot)",
+            strategy_events,
         )
         self.assertLess(strategy_events, strategy_update)
 
         signal_events = self.signals.index("bool rawHigh=highConfirmedEarlier")
         signal_update = self.signals.index(
-            "g_lastSwingHi=longPivot.price", signal_events
+            "g_lastSwingHi=externalHighPivot.price", signal_events
         )
         self.assertLess(signal_events, signal_update)
 
@@ -484,6 +826,13 @@ class SharedCoreContractTests(unittest.TestCase):
             self.strategy,
             r"OrderCalcProfit\(orderType,_Symbol,actualVolume,\s*fill,stop,actualStopPnl\)",
         )
+        self.assertRegex(
+            self.strategy,
+            r"double\s+riskTolerance\s*=\s*"
+            r"MathMax\(0\.05,riskBudget\*1e-4\)\s*;",
+            "post-fill numeric tolerance must stay at exactly 5 cents or "
+            "0.01% of the risk budget, whichever is larger",
+        )
         self.assertIn("actualRisk<=riskBudget+riskTolerance", self.strategy)
         self.assertIn(
             "if(!fillValid || (!protectionValid && !protectionPending))",
@@ -606,6 +955,133 @@ class SharedCoreContractTests(unittest.TestCase):
         self.assertLess(force_close, pending_guard)
         self.assertLess(pending_guard, close_request)
         self.assertLess(close_request, pending_state)
+
+    def test_strategy_funnel_telemetry_is_observational_and_stable(self) -> None:
+        enabled_start = self.strategy.index("bool FunnelTelemetryEnabled(")
+        enabled_end = self.strategy.index(
+            "void ResetFunnelTelemetry(", enabled_start
+        )
+        enabled = self.strategy[enabled_start:enabled_end]
+        self.assertIn("InpVerbose", enabled)
+        self.assertIn("MQLInfoInteger(MQL_TESTER)", enabled)
+
+        process = self.strategy.index("bool ProcessClosedBar(")
+        advance = self.strategy.index("SblAdvanceSetup(", process)
+        observation = self.strategy.index("ObserveFunnelAdvance(", advance)
+        self.assertLess(
+            advance,
+            observation,
+            "telemetry must observe the completed core decision",
+        )
+
+        observer_start = self.strategy.index("void ObserveFunnelAdvance(")
+        observer_end = self.strategy.index("bool InputsAreValid(", observer_start)
+        observer = self.strategy[observer_start:observer_end]
+        for transition in (
+            "hasInternalPivot",
+            "targetTaken",
+            "hasPendingMss",
+            "mssBar",
+            "confirmationBar",
+            "hasContextFvg",
+            "trigger",
+            "decision.signal",
+        ):
+            with self.subTest(transition=transition):
+                self.assertIn(transition, observer)
+        self.assertIn("if(!FunnelTelemetryEnabled()) return", observer)
+
+        creation = self.strategy.index("g_setups[count]=candidate")
+        created_counter = self.strategy.index(
+            "g_funnel.setupsCreated++", creation
+        )
+        self.assertLess(creation, created_counter)
+
+        tester_start = self.strategy.index("double OnTester()")
+        tester = self.strategy[tester_start:]
+        self.assertIn("ICT_SB_FUNNEL,setups_created=", tester)
+        self.assertIn("pending_mss=", tester)
+        self.assertIn("early_target=", tester)
+        self.assertRegex(
+            observer,
+            r"phaseBefore==SBL_PHASE_WAIT_INTERNAL_PIVOT\s*&&\s*"
+            r"!hadTarget\s*&&\s*setup\.targetTaken\s*&&\s*"
+            r"setup\.phase!=SBL_PHASE_INVALID",
+        )
+        for field in (
+            "invalid_wait_internal",
+            "invalid_wait_target",
+            "invalid_wait_mss",
+            "invalid_wait_confirmation",
+            "invalid_wait_retracement",
+            "invalid_triggered",
+            "invalid_other",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, tester)
+
+    def test_strategy_entry_funnel_observes_existing_rejection_paths(self) -> None:
+        enter_start = self.strategy.index("bool EnterSetup(")
+        enter_end = self.strategy.index(
+            "//====================== GESTION DES POSITIONS", enter_start
+        )
+        enter = self.strategy[enter_start:enter_end]
+        self.assertIn("bool observeEntry=FunnelTelemetryEnabled()", enter)
+        self.assertLess(
+            enter.index("g_funnel.entryAttempts++"),
+            enter.index("SymbolInfoTick("),
+        )
+
+        for counter in (
+            "entryRejectQuote",
+            "entryRejectValueArea",
+            "entryRejectRisk",
+            "entryRejectStopLevel",
+            "entryRejectLots",
+            "entryRejectWindow",
+            "entryBrokerReject",
+            "entryPending",
+            "entryConfirmed",
+        ):
+            with self.subTest(counter=counter):
+                self.assertIn(f"g_funnel.{counter}++", enter)
+        self.assertIn("ObserveEntryValueAreaGap(setup.logic,entry)", enter)
+
+        helper_start = self.strategy.index("void ObserveEntryValueAreaGap(")
+        helper_end = self.strategy.index("bool InputsAreValid(", helper_start)
+        helper = self.strategy[helper_start:helper_end]
+        self.assertIn(
+            "ExecutableEntryValueAreaGapTicks(setup,entry)", helper
+        )
+        self.assertIn("entryRejectValueAreaMaxGapTicks", helper)
+
+        distance_start = self.strategy.index(
+            "double ExecutableEntryValueAreaGapTicks("
+        )
+        distance_end = self.strategy.index(
+            "void ObserveEntryValueAreaGap(", distance_start
+        )
+        distance = self.strategy[distance_start:distance_end]
+        self.assertIn("ExecutableEntryBounds(setup,lower,upper)", distance)
+        self.assertIn("gap/tickSize", distance)
+
+        tester_start = self.strategy.index("double OnTester()")
+        tester = self.strategy[tester_start:]
+        for field in (
+            "entry_attempt=",
+            "reject_quote=",
+            "reject_value_area=",
+            "reject_value_area_max_gap_ticks=",
+            "reject_risk=",
+            "reject_stop_level=",
+            "reject_lots=",
+            "reject_window=",
+            "broker_reject=",
+            "pending=",
+            "confirmed=",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, tester)
 
     def test_core_retains_fvg_candidate_until_confirmation(self) -> None:
         self.assertIn("hasCandidateFvg", self.core)

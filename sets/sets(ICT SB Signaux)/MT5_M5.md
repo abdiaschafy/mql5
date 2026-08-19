@@ -1,11 +1,11 @@
-# SET MT5 — ICT Silver Bullet Strategy (EA) · exécution M5
+# SET MT5 - ICT Silver Bullet Strategy (EA) · exécution M5
 
 - **EA** : `ICT_SilverBullet_Strategy.mq5` (magic 260711) · **Graphe : M5**
 - **Fichier de réglages VALIDÉ OOS** : **`ICT_SB_DE30_M5.set`** (à charger via *Charger* dans l'onglet Entrées). `ICT_SB_FDXS.set` = ancien baseline (négatif en OOS, ne plus utiliser).
 - **⚠️ Compte HEDGING requis** (netting → les 3 setups fusionnent).
 - **⚠️ M5 obligatoire, PAS M1** : en M1 les SL structurels sont trop serrés → lots gonflés → le spread du CFD dévore le R (test DE30 M1 = **−48 %**). M5 = TF d'exploitation.
 
-## ⚠️ CORRECTION (25/07) — anciens chiffres invalides
+## ⚠️ CORRECTION (25/07) - anciens chiffres invalides
 
 Les premiers backtests DE30 (+44 359, PF 1,13, DD 25,6 %, 1533 trades) étaient sur la **MAUVAISE config** : `ExpertParameters=.set` dans un `/config` headless **ne charge pas** le .set → l'EA tournait sur ses **défauts** (FVG on, killzones OFF, sizing composé). La bonne méthode headless = section **`[TesterInputs]`** dans le .ini. Chiffres corrigés ci-dessous.
 
@@ -14,13 +14,13 @@ Les premiers backtests DE30 (+44 359, PF 1,13, DD 25,6 %, 1533 trades) étaient 
 | Config | Période | Net | PF | DD max | Trades | Verdict |
 |---|---|---|---|---|---|---|
 | Baseline (2,0/4,0/2,0/4/20/50 %) | 2024-2026 (IS) | +37 384 | 2,34 | 5,0 % | 394 | in-sample |
-| Baseline | **OOS mi-25→mi-26** | **−576** | **0,97** | 11,3 % | — | ❌ négatif OOS |
+| Baseline | **OOS mi-25→mi-26** | **−576** | **0,97** | 11,3 % | - | ❌ négatif OOS |
 | **VALIDÉE (2,5/6/2,5/4/20/30 %)** | 2024-2026 (IS) | +44 489 | 2,62 | 7,0 % | 366 | in-sample |
 | **VALIDÉE** | **OOS mi-25→mi-26** | **+5 251** | **1,30** | 12,2 % | 122 | ✅ **positif OOS** |
 
-**Validation OOS (486 configs optimisées sur IS puis re-testées sur OOS)** : corrélation profit IS↔OOS **r=0,81**, **top 30 IS = 30/30 positives en OOS**. Le réglage « laisser courir » (**TP1R=2,5 + TP1%=30**) fait passer l'OOS de négatif (baseline) à positif. **Edge RÉEL mais MODESTE : attente réaliste ~PF 1,3, ~+10 %/an sur 50k, DD ~12 %** — régime-dépendant (haussier DAX). Ne pas surdimensionner.
+**Validation OOS (486 configs optimisées sur IS puis re-testées sur OOS)** : corrélation profit IS↔OOS **r=0,81**, **top 30 IS = 30/30 positives en OOS**. Le réglage « laisser courir » (**TP1R=2,5 + TP1%=30**) fait passer l'OOS de négatif (baseline) à positif. **Edge RÉEL mais MODESTE : attente réaliste ~PF 1,3, ~+10 %/an sur 50k, DD ~12 %** - régime-dépendant (haussier DAX). Ne pas surdimensionner.
 
-## Réglages (`ICT_SB_DE30_M5.set` — VALIDÉ OOS)
+## Réglages (`ICT_SB_DE30_M5.set` - VALIDÉ OOS)
 
 | Input | Valeur |
 |---|---|

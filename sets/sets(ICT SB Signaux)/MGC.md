@@ -1,15 +1,15 @@
-# SET MGC — Micro Or (Gold)
+# SET MGC - Micro Or (Gold)
 
 - **Instrument** : MGC (contrat courant) · **Graphe : 1 minute**
-- **Usage** : ✋ **DISCRÉTIONNAIRE** — indicateur `ICT Silver Bullet Signals` (triangles + alertes ; tu exécutes à la main)
+- **Usage** : ✋ **DISCRÉTIONNAIRE** - indicateur `ICT Silver Bullet Signals` (triangles + alertes ; tu exécutes à la main)
 - **⚠️ PAS en auto** : le backtest donne un DD de **−63 %** (~20 mois sous l'eau jusqu'à −54 %) avant récupération. C'est un **pari « long or en tendance »**, pas un edge stable.
 
 ## Quand le trader
 - **Seulement quand l'or est en tendance HAUSSIÈRE claire** (biais D1 haussier, EMA10>EMA20 stacking sur le Daily).
-- **Privilégier les LONGS** : au backtest les shorts perdent (PF 0,76) — l'edge est du côté long (rallye de l'or).
+- **Privilégier les LONGS** : au backtest les shorts perdent (PF 0,76) - l'edge est du côté long (rallye de l'or).
 - Attendre la séquence complète : purge d'un swing high → retracement en discount → triangle vert dans la killzone.
 
-## Réglages (ICT Silver Bullet Signals — indicateur)
+## Réglages (ICT Silver Bullet Signals - indicateur)
 
 ### 1. Biais & Alignement
 | Réglage | Valeur |
@@ -51,5 +51,5 @@
 
 ---
 
-### Réf. auto (NE PAS trader en auto — pour mémoire)
+### Réf. auto (NE PAS trader en auto - pour mémoire)
 Config stratégie MGC = FVG+EMA+MSS+Trail+FiltreD, Both. Backtest 2,5 ans / 50k : +33 290 $, PF 1,13, **DD −31 267 $ (−63 %)**, Sortino 0,68. Disqualifié en auto à cause du drawdown.

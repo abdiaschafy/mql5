@@ -1,18 +1,18 @@
-# ICT — MQL5 (MetaTrader 5)
+# ICT - MQL5 (MetaTrader 5)
 
 | Fichier | Type | Rôle |
 |---|---|---|
-| `ICT_Structure_OTE_EA.mq5` | **Source supprimé** (magic historique 260709) | Documentation et artefacts historiques seulement — section 1 |
-| `ICT_TopDown_Confluence.mq5` | **Indicateur** | Port MT5 **complet** de l'indicateur v2.5 (TV/NT) — section 2 |
-| `TA_RiskManager.mq5` | **EA panneau** (magic 260710) | **Risk Manager + trade manager** : portage MT5 du Trade Assistant NT — section 3 |
-| `ICT_SilverBullet_Strategy.mq5` | **EA** (magic 260711) | Stratégie **Silver Bullet** (modèle continuation) — section 4 |
-| `ICT_SilverBullet_Signals.mq5` | **Indicateur** | **Signaux Silver Bullet** (EMA10/20, triangles, killzones en bas, dashboard déplaçable) — section 4 |
+| `ICT_Structure_OTE_EA.mq5` | **Source supprimé** (magic historique 260709) | Documentation et artefacts historiques seulement - section 1 |
+| `ICT_TopDown_Confluence.mq5` | **Indicateur** | Port MT5 **complet** de l'indicateur v2.5 (TV/NT) - section 2 |
+| `TA_RiskManager.mq5` | **EA panneau** (magic 260710) | **Risk Manager + trade manager** : portage MT5 du Trade Assistant NT - section 3 |
+| `ICT_SilverBullet_Strategy.mq5` | **EA** (magic 260711) | Stratégie **Silver Bullet** (modèle continuation) - section 4 |
+| `ICT_SilverBullet_Signals.mq5` | **Indicateur** | **Signaux Silver Bullet** (EMA10/20, triangles, killzones en bas, dashboard déplaçable) - section 4 |
 
 > ⚠️ **Recharger un EA/indicateur MT5** : recompiler **ne suffit pas** (l'image reste en cache pour la session), et le re-glisser sur le graphique non plus → **redémarrer le terminal**. Les composants attachés au graphique peuvent se recharger, mais leur état en mémoire n'est pas nécessairement reconstruit ; voir notamment la sécurité de redémarrage Silver Bullet en section 4.4.
 
 ---
 
-# 1. Ancien ICT Structure OTE EA — archive
+# 1. Ancien ICT Structure OTE EA - archive
 
 > Le source `ICT_Structure_OTE_EA.mq5` a été supprimé à la révision
 > `9178b72`. Cette section, les presets et les rapports associés décrivent
@@ -32,12 +32,12 @@ symbol-agnostic pour US500 / US30 / USTEC / DE30.
 
 ## Logique (identique à la stratégie Pine)
 
-1. **Structure interne** — pivots `InpStructLen` (5) → état `trend` sur cassure en clôture d'un swing (BOS/CHoCH).
-2. **OTE** — 1 par cassure, armée au **pic confirmé** (1er pivot opposé après le break). Origine (1.0) = corps du swing lanceur (verrouillé), terminus (0.0) = corps du pic. Fibs 0.62–0.79 (ancrage **corps**).
-3. **Entrée** — tap de l'OTE (bougie fermée) pendant **killzone/macro Londres-NY** (heure NY via `TimeGMT()+InpNYGMTOffset`). **LONG + SHORT**.
-4. **Filtre A+** — `InpUseD1Filter=true` (défaut) : ne trade que dans le sens du **biais D1** (EMA10/20). C'est le filtre qui fait l'edge.
-5. **Sorties** — SL = mèche swing origine ∓ `InpSLBuffer` ; TP `InpTPR`(3)R ; break-even à `InpBER`(2)R.
-6. **MM** — risque `InpRiskPct`(1 %) + échelle anti-DD (1 %→0,5 %→0,25 %) ; cap perte/jour ; flat 16:15 NY.
+1. **Structure interne** - pivots `InpStructLen` (5) → état `trend` sur cassure en clôture d'un swing (BOS/CHoCH).
+2. **OTE** - 1 par cassure, armée au **pic confirmé** (1er pivot opposé après le break). Origine (1.0) = corps du swing lanceur (verrouillé), terminus (0.0) = corps du pic. Fibs 0.62–0.79 (ancrage **corps**).
+3. **Entrée** - tap de l'OTE (bougie fermée) pendant **killzone/macro Londres-NY** (heure NY via `TimeGMT()+InpNYGMTOffset`). **LONG + SHORT**.
+4. **Filtre A+** - `InpUseD1Filter=true` (défaut) : ne trade que dans le sens du **biais D1** (EMA10/20). C'est le filtre qui fait l'edge.
+5. **Sorties** - SL = mèche swing origine ∓ `InpSLBuffer` ; TP `InpTPR`(3)R ; break-even à `InpBER`(2)R.
+6. **MM** - risque `InpRiskPct`(1 %) + échelle anti-DD (1 %→0,5 %→0,25 %) ; cap perte/jour ; flat 16:15 NY.
 
 Architecture : structure/armement/entrée en **OnNewBar** ; break-even + flat en **OnTick**. `OnTester()` écrit les stats du backtest dans `Common\Files\ict_bt_stats.txt`.
 
@@ -79,12 +79,12 @@ terminal64.exe /config:sets\backtest_US500_H1.ini
 # 2. Indicateur `ICT_TopDown_Confluence.mq5` (port complet v2.5)
 
 Port MT5 **complet** de l'indicateur ICT Top-Down Confluence (TradingView v2.5 / NinjaTrader).
-**Compilé 0 erreur / 0 warning** — installé dans `MQL5\Indicators\`.
+**Compilé 0 erreur / 0 warning** - installé dans `MQL5\Indicators\`.
 
 ## Modules (parité TV/NT)
 
-- **Biais HTF + 2 confirmations PERSISTANTS** — EMA10/20 stacking par TF (D1/H1/M15 réglables) ; l'état ne s'inverse qu'à l'apparition du stack OPPOSÉ (= après croisement EMA10/20). Implémentation : scan arrière du TF jusqu'au dernier stack complet (sans état stocké, robuste aux recalculs).
-- **Dashboard** coin haut-droit : Biais / Conf1 / Conf2 / Structure / SIGNAL + **compte à rebours de bougie** (rafraîchi 1 s via OnTimer — fonctionne sur TOUS les TF, D1 inclus : les barres MT5 ont de vraies heures).
+- **Biais HTF + 2 confirmations PERSISTANTS** - EMA10/20 stacking par TF (D1/H1/M15 réglables) ; l'état ne s'inverse qu'à l'apparition du stack OPPOSÉ (= après croisement EMA10/20). Implémentation : scan arrière du TF jusqu'au dernier stack complet (sans état stocké, robuste aux recalculs).
+- **Dashboard** coin haut-droit : Biais / Conf1 / Conf2 / Structure / SIGNAL + **compte à rebours de bougie** (rafraîchi 1 s via OnTimer - fonctionne sur TOUS les TF, D1 inclus : les barres MT5 ont de vraies heures).
 - **Structure 2 échelles** : BOS/CHoCH (interne, 5) + MSS/BOS (swing, 20), lignes au swing cassé + tag (CHoCH au-dessus, MSS/BOS dessous).
 - **Zone OTE par cassure** : 0.666→0.79, sweet 0.705 (tirets), repère 0.62 (pointillés), cible extension, **A+** = cadre épais si biais HTF aligné, label long dessous / short dessus.
 - **Killzones Open/Close** (London O/C, NY O/C, Asie) en **heure New York avec DST automatique** (conversion broker→GMT→NY calculée), N derniers jours réglables.
@@ -97,15 +97,15 @@ Port MT5 **complet** de l'indicateur ICT Top-Down Confluence (TradingView v2.5 /
 ## Adaptations propres à MT5 (documentées)
 
 - **Pas de transparence sur les objets MT5** → les fonds (killzones, macros, NDOG) utilisent des **couleurs pâles en arrière-plan** (back=true). Adapter les couleurs si fond de graphique sombre (inputs dédiés).
-- **Macros** = segments ancrés au prix (recalés chaque seconde sur le bas de l'échelle visible) — équivalent visuel des lanes pixel de NT.
-- **Signaux ▲▼ historiques** non tracés (le biais historique par barre coûterait trop cher) — le dashboard SIGNAL reflète l'état live.
-- Le NDOG utilise le **jour broker D1** (sur les brokers GMT+2/+3 type Exness, la clôture D1 ≈ 17:00 NY — cohérent avec la définition ETH).
+- **Macros** = segments ancrés au prix (recalés chaque seconde sur le bas de l'échelle visible) - équivalent visuel des lanes pixel de NT.
+- **Signaux ▲▼ historiques** non tracés (le biais historique par barre coûterait trop cher) - le dashboard SIGNAL reflète l'état live.
+- Le NDOG utilise le **jour broker D1** (sur les brokers GMT+2/+3 type Exness, la clôture D1 ≈ 17:00 NY - cohérent avec la définition ETH).
 - Recalcul complet limité aux **5000 dernières barres** (perf).
 - **Dashboard déplaçable** : drag par le bandeau (`CHART_EVENT_MOUSE_MOVE`, position mémorisée en variable globale). En corner droit, la distance au bord se calcule `chartW - mx`.
 
 ---
 
-# 3. `TA_RiskManager.mq5` — Risk Manager + trade manager (V2.0)
+# 3. `TA_RiskManager.mq5` - Risk Manager + trade manager (V2.0)
 
 Portage MT5 du **Risk Manager du Trade Assistant NinjaTrader** (voir `../ninjatrader/README.md`). Complément du Trade Assistant MT5 de Kravchenko : celui-ci gère les **positions**, le TA_RiskManager gère le **compte**.
 
@@ -127,13 +127,13 @@ Portage MT5 du **Risk Manager du Trade Assistant NinjaTrader** (voir `../ninjatr
 - **Jour de trading** = bascule **18:00 New York** (DST automatique) ; états persistés **par compte** en variables globales du terminal.
 - **Paliers d'équité** : DD ≥3 % → risque ×0,5 ; ≥6 % → ×0,25. **Objectif jour** +2 % → demi-risque.
 - **Limites FTMO-like** : perte jour **5 %** (alerte 4 %), **DD max 10 %** → **fermeture de toutes les positions** (une fois) + **verrou souple** (re-clic ≤ 6 s pour confirmer). **Pause** après 3 pertes consécutives. **Cap d'exposition** 2 % (refus souple).
-- **SL AUTO par ATR** (période/coef réglables), borné au *stops level* + spread du broker — indispensable : un SL en points fixes est absurde d'un symbole à l'autre (200 pts = 2 $ sur BTC → « invalid stops » + lot démesuré).
+- **SL AUTO par ATR** (période/coef réglables), borné au *stops level* + spread du broker - indispensable : un SL en points fixes est absurde d'un symbole à l'autre (200 pts = 2 $ sur BTC → « invalid stops » + lot démesuré).
 - **Trailing** (distance ATR ou points fixes, armement réglable) et **Break-even à N×R** (actif si le trailing est OFF).
 - **Scaling-in consolidé** : une position ajoutée au groupe → **prix moyen**, **SL unique**, TP ré-ancrés en conservant leur RR. Draguer le SL d'une position **aligne tout le groupe**.
 - **Drag des ordres en attente** : déplacer une ligne d'entrée déplace **tout le groupe** (SL/TP suivent, distances conservées).
 - **Étiquettes sur les lignes** : entrée `BUY 1.76`, SL `−100 $`, TP `+200 $`, pendings `B.PEND`, niveaux partiels à venir `TP2 0.05 (+92 $)`.
 
-## TP partiels — **UNE seule position** (V2.0, refonte)
+## TP partiels - **UNE seule position** (V2.0, refonte)
 
 > ⚠️ **Erreur de conception corrigée.** La V1.3 ouvrait **N tickets** (un par TP) puisqu'un ticket MT5 ne porte qu'un seul TP. Conséquences : N trades comptés (la limite de pertes consécutives sautait), N SL affichés, statistiques faussées.
 
@@ -145,7 +145,7 @@ Désormais, comme les trade managers professionnels : **1 position** (lot total,
 
 ## Journal & dashboard
 
-- **Tous les trades fermés du compte** sont journalisés (y compris ceux passés par le Trade Assistant Kravchenko ou à la main, toutes paires) dans **`MQL5\Files\TA_Journal.csv`** — **format identique à NinjaTrader** (16 colonnes, Compte = login MT5).
+- **Tous les trades fermés du compte** sont journalisés (y compris ceux passés par le Trade Assistant Kravchenko ou à la main, toutes paires) dans **`MQL5\Files\TA_Journal.csv`** - **format identique à NinjaTrader** (16 colonnes, Compte = login MT5).
 - `TA_View.html` est régénéré avec les données incluses ; le bouton **DASH** l'ouvre. Le template **`TradeAssistant_Dashboard.html`** doit être copié dans `MQL5\Files\` (source dans `../ninjatrader/`).
 
 ## Pièges MQL5 rencontrés
@@ -156,7 +156,7 @@ Désormais, comme les trade managers professionnels : **1 position** (lot total,
 
 ---
 
-# 4. ICT Silver Bullet — Stratégie (EA) + Signaux (indicateur)
+# 4. ICT Silver Bullet - Stratégie (EA) + Signaux (indicateur)
 
 La version 2.00 implémente un modèle de continuation strict décrit dans
 `LOGIQUE_ENTREES.md`. L'EA et l'indicateur s'appuient sur le même moteur de
@@ -182,6 +182,38 @@ connaît ni le verrou du compte, ni les positions, ni les fills et rejets du
 broker ; il reconstruit aussi un historique borné alors que l'EA ne reconstruit
 pas un setup perdu lors d'un redémarrage.
 
+### Profils de référence et d'expérimentation
+
+La séquence normative de `LOGIQUE_ENTREES.md` reste celle du **profil strict de
+référence**. Les nouveaux inputs permettent aussi de mesurer un profil plus
+fréquent, sans que ce dernier devienne une nouvelle cible fonctionnelle :
+
+```text
+Profil strict de référence
+EP2 / P2 / MBT0 / TBI0 / DR1 / FVC1 / ET0
+
+Profil expérimental fréquence
+Timeframe d'exécution M1 / EP1 / P1 / MBT1 / TBI1 / DR0 / FVC4 / ET10
+```
+
+Le timeframe d'exécution du profil strict n'est pas imposé par cette notation.
+Le `M1` du profil expérimental désigne le graphique/timeframe d'exécution ; il ne
+remplace pas le stacking obligatoire D1/H1/M5/M1.
+
+| Code | Input | Portée |
+|---|---|---|
+| `P` | `InpInternalPivotStrength` (`1` ou `2`) | Pivot interne 1/1 ou 2/2 utilisé par le MSS |
+| `EP` | `InpExternalPivotStrength` (`1` ou `2`) | Pivots externes 1/1 ou 2/2 servant de références de liquidité, détectés indépendamment de `P` |
+| `MBT` | `InpAllowMssBeforeTarget` | `0` invalide un MSS antérieur à la cible ; `1` peut mémoriser ce MSS causal puis le promouvoir après une cible ultérieure |
+| `TBI` | `InpAllowTargetBeforeInternalPivot` | `0` invalide une cible antérieure au pivot interne ; `1` peut la mémoriser en attendant le pivot puis le MSS |
+| `DR` | `InpRequireDirectionalRejection` | `1` exige le rejet/couleur directionnel du trigger ; `0` retire seulement cette exigence |
+| `FVC` | `InpMaxFvgCandidates` (`1` à `4`) | Nombre maximal de FVG candidates post-purge conservées avant promotion du contexte |
+| `ET` | `InpEntryEqToleranceTicks` (`0` à `50`) | Tolérance de prix d'exécution de l'EA autour d'EQ ; absente du moteur de décision et de Signals |
+
+`ICT_SilverBullet_Signals.mq5` expose et transmet tous les réglages du moteur
+partagé de ce tableau (`P`, `EP`, `MBT`, `TBI`, `DR`, `FVC`). Il n'expose pas
+`ET`, car l'indicateur ne réalise ni cotation d'entrée, ni ordre, ni fill.
+
 ## 4.2 Logique d'entrée v2
 
 Le contrat de biais est fixe : EMA10/EMA20 sur **D1 + H1 + M5 + M1**. Chaque
@@ -198,13 +230,19 @@ l'alignement, le filtre D1 ou le MSS restent présents pour charger les anciens
 presets, mais doivent rester activés ; toute autre valeur provoque un refus
 d'initialisation. L'OTE est pareillement fixé à 62–79 %.
 
+La séquence ci-dessous décrit le profil strict de référence. Les modes
+expérimentaux ne relâchent que les portes nommées dans le tableau précédent ;
+ils ne rendent jamais valides un pivot antérieur à la purge, un faux croisement,
+une FVG absente, une mauvaise moitié du range ou une entrée hors fenêtre.
+
 Séquence LONG, obligatoirement chronologique :
 
 1. verrouiller les derniers swings high et low confirmés ;
 2. purger le swing low par une mèche puis une clôture de réintégration stricte
    (`Low < swing low AND Close > swing low`) et verrouiller l'extrême comme
    Fibonacci 0 ;
-3. former et confirmer un swing high **interne** strict après la purge ;
+3. former et confirmer un swing high **interne** strict après la purge, en 2/2
+   dans le profil de référence (`P2`) ;
 4. balayer par une mèche le swing high **externe**, qui est alors consommé ;
 5. confirmer un vrai croisement MSS par clôture au-dessus du swing high interne,
    le déplacement minimal et une FVG haussière dont la Consequent Encroachment
@@ -225,21 +263,24 @@ Le trigger OTE demande seulement que le range de la bougie intersecte la zone
 inclusive 62–79 % ; la bougie n'a pas à traverser toute cette zone.
 La CE vaut `(FvgLow + FvgHigh) / 2`. Une FVG traversant l'EQ reste valide si sa CE
 se trouve dans la moitié autorisée ; si elle déclenche l'entrée, cette CE doit
-être réellement touchée. La bougie doit présenter un rejet directionnel et
-clôturer dans la bonne moitié. L'exécution limite n'est pas implémentée.
+être réellement touchée. Avec `DR1`, la bougie doit aussi présenter un rejet
+directionnel. Avec `DR0`, seule cette exigence de rejet/couleur disparaît : le
+toucher du trigger, la clôture dans la bonne moitié, la FVG de contexte, le biais
+et la fenêtre restent obligatoires. L'exécution limite n'est pas implémentée.
 
 Les références de liquidité sont identifiées par timestamp. Une origine purgée
 ou une cible balayée ne peut pas être recyclée indéfiniment. Le pivot interne
-utilisé par le MSS est confirmé par deux bougies de chaque côté et sa source doit
-être postérieure à la purge. Le sweep externe et le MSS peuvent être constatés
-sur une même bougie si ce pivot était déjà confirmé ; la bougie de purge ne peut
-jamais fournir ces événements.
+utilisé par le MSS est confirmé en 2/2 avec `P2`, ou en 1/1 avec `P1` ; sa source
+doit toujours être postérieure à la purge. Dans le profil strict, le sweep
+externe et le MSS peuvent être constatés sur une même bougie si ce pivot était
+déjà confirmé ; la bougie de purge ne peut jamais fournir ces événements.
 
-Le détecteur 2/2 produit séparément les événements pivot high et pivot low. Un
-pivot confirmé sur la bougie courante peut alimenter la structure interne d'un
-setup antérieur, mais il n'est promu comme nouvelle référence externe qu'après le
-traitement de cette bougie. Les événements de liquidité courants restent donc
-évalués contre les références connaissables avant sa clôture.
+Les détecteurs interne (`P`) et externe (`EP`) produisent séparément leurs
+événements pivot high et pivot low et utilisent des buffers causaux indépendants.
+Un pivot 1/1 est confirmé par la première bougie à droite ; un pivot 2/2 par la
+seconde. Un pivot externe confirmé sur la bougie courante ne devient une nouvelle
+référence qu'après son traitement complet. Les événements de liquidité courants
+restent donc évalués contre les références connaissables avant sa clôture.
 
 ## 4.3 Filtre horaire et heure New York
 
@@ -279,6 +320,16 @@ Un mauvais mode broker décale les fenêtres même si le DST New York est correc
   est calculé avec `OrderCalcProfit`, puis prix, volume et risque réels sont
   réconciliés depuis le deal ou la position. Un fill hors discount/premium, un
   sur-risque ou une protection non applicable déclenche une fermeture de sécurité.
+- `InpEntryEqToleranceTicks` (`ET`) ne tolère qu'un petit dépassement **autour
+  d'EQ au moment de l'exécution** : pour un LONG, la borne haute devient
+  `EQ + ET × tick`, et pour un SHORT la borne basse devient `EQ - ET × tick`.
+  Fib0 reste la borne dure dans les deux sens. `ET` ne modifie ni le signal sur
+  bougie clôturée, ni la FVG/OTE/EMA, ni l'origine, ni le SL ; `ET0` conserve la
+  moitié stricte et `ET10` autorise au maximum dix ticks au-delà d'EQ.
+- Après le fill, l'écart purement numérique admis sur le risque vaut exactement
+  `max(0,01 % du budget de risque ; 0,05 $)`. Cette marge absorbe les arrondis
+  monétaires ; elle n'est ni un risque additionnel de 0,01 point de pourcentage,
+  ni une permission de dépasser volontairement le budget.
 - SL structurel au-delà de Fibonacci 0. Baseline recommandée et valeurs par
   défaut : TP1 à 2R, partiel 50 %, objectif final 4R et trailing 2R. Après TP1,
   le reliquat passe à break-even ; avec
@@ -348,6 +399,11 @@ aide discrétionnaire :
   et compte à rebours de la bougie ;
 - alertes et notifications push uniquement pour un nouveau signal live.
 
+Il partage avec l'EA les réglages Core `P`, `EP`, `MBT`, `TBI`, `DR` et `FVC`,
+avec les mêmes validations et transitions. Seul `ET` est absent de Signals :
+c'est une tolérance propre au prix exécutable et au fill de l'EA, après la
+décision stricte du moteur.
+
 `InpShowMacros` est conservé uniquement pour charger les anciens presets et n'a
 plus d'effet. Les anciennes lanes de macros ne sont ni des fenêtres d'entrée ni
 des éléments affichés par la v2.
@@ -384,6 +440,22 @@ périodes IS et OOS. L'ancienne méthode headless fondée sur
 `ExpertParameters=.set` n'est pas considérée fiable dans ce projet. `OnTester()`
 écrit les statistiques v2 dans un CSV `SBopt_v2_*.csv` sous `Common\Files`.
 
+### Backtests expérimentaux du 10 août 2026
+
+Le profil fréquence M1 a été rejoué en vrais ticks sur DE30 et XAUUSD du
+2 janvier 2024 au 8 août 2026. Les paramètres reproductibles, métriques et
+rapports disponibles sont regroupés dans
+[`backtests/2026-08-10-tuning/RESULTATS_TUNING.md`](backtests/2026-08-10-tuning/RESULTATS_TUNING.md).
+
+Quatre presets correspondants sont fournis :
+
+- `ICT_SB_DE30_M1_RELAXED_ET0.set` et `ICT_SB_DE30_M1_RELAXED_ET10.set` ;
+- `ICT_SB_XAUUSD_M1_RELAXED_ET0.set` et `ICT_SB_XAUUSD_M1_RELAXED_ET10.set`.
+
+Ils se trouvent dans `sets/sets(ICT SB Signaux)/`. Ces profils prouvent que des
+ordres peuvent être produits, mais le nombre de positions demeure trop faible
+pour conclure à un avantage statistique ou autoriser un déploiement réel.
+
 ## 4.7 Tests et vérification
 
 Depuis la racine du projet :
@@ -414,8 +486,10 @@ make test-mql5       # compilation MetaEditor uniquement
 ```
 
 La suite couvre notamment le stacking strict, la purge réintégrée, les pivots
-internes post-purge, la séparation sweep externe/MSS, la CE de FVG, OTE, EMA,
-les liquidités consommées, les 540 minutes de fenêtres, leur identité et les
-transitions DST US/Europe. Les tests de contrat restent statiques et la
+internes et externes 1/1 ou 2/2, leur isolation, les deux politiques d'ordre
+`MBT`/`TBI`, le rejet directionnel optionnel, le pool `FVC`, la séparation sweep
+externe/MSS, la CE de FVG, OTE, EMA, les liquidités consommées, les 540 minutes
+de fenêtres, leur identité, `ET` limité à EQ et les transitions DST US/Europe.
+Les tests de contrat restent statiques et la
 compilation MetaEditor ne remplace pas un backtest v2, un test de redémarrage ni
 des essais de fills, rejets et fermetures partielles avec un broker réel.

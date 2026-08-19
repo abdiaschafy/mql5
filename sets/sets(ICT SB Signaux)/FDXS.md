@@ -1,7 +1,7 @@
-# SET FDXS — Micro DAX (Eurex)
+# SET FDXS - Micro DAX (Eurex)
 
 - **Instrument** : FDXS (contrat courant) · **Graphe : 1 minute**
-- **Usage** : ⚙️ **STRATÉGIE AUTO** — `ICT Silver Bullet Strategy` (forward-test Sim démo, puis réel si validé)
+- **Usage** : ⚙️ **STRATÉGIE AUTO** - `ICT Silver Bullet Strategy` (forward-test Sim démo, puis réel si validé)
 - **Backtest réf.** (2,5 ans, compte 50k) : **+35 613 $ · PF 1,26 · DD −12 204 $ (−24 %) · Sortino 1,46 · WR 36,9 % · RR 2,15**
 
 ## Réglages (ICT Silver Bullet Strategy)

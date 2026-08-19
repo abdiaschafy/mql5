@@ -110,9 +110,9 @@ Le contre-audit invalide ou nuance plusieurs affirmations de `AUDIT.md` :
 5. **Le Risk Manager refuse correctement un lot auto sous le minimum.** Le forçage dangereux du minimum concerne Silver Bullet, pas le Risk Manager.
 6. **Les défauts FVG et OTE de Silver Bullet sont dormants dans les presets DE30/XAU actuels**, qui fixent `InpUseFVG=false` et `InpUseOTE=false`. La FVG reste toutefois active dans les valeurs par défaut et dans la fiche MGC ; l'OTE redevient affecté dès qu'il est activé.
 
-## 7. Blocages critiques — P0
+## 7. Blocages critiques - P0
 
-### P0-1 — Le coupe-circuit du Risk Manager ne rend pas le compte flat
+### P0-1 - Le coupe-circuit du Risk Manager ne rend pas le compte flat
 
 `CloseAllPositions()` ne parcourt que les positions (`TA_RiskManager.mq5:293-300`). Il ne supprime aucun ordre pending.
 
@@ -136,7 +136,7 @@ Correction requise :
 
 Références : [CTrade](https://www.mql5.com/en/docs/standardlibrary/tradeclasses/ctrade), [OrderDelete](https://www.mql5.com/en/docs/standardlibrary/tradeclasses/ctrade/ctradeorderdelete).
 
-### P0-2 — Les killzones Silver Bullet peuvent être fausses en backtest
+### P0-2 - Les killzones Silver Bullet peuvent être fausses en backtest
 
 `NYNow()` traite `TimeGMT()` comme l'UTC réel (`ICT_SilverBullet_Strategy.mq5:199-204`). Cette heure décide du reset journalier et de l'admission dans les fenêtres (`:428-433`, `:502`).
 
@@ -150,7 +150,7 @@ Correction requise : utiliser une conversion explicite et testable depuis le tim
 
 Référence : [simulation du temps dans le Strategy Tester](https://www.mql5.com/en/docs/runtime/testing).
 
-### P0-3 — TP1, BE et trailing Silver Bullet ne s'exécutent pas au niveau annoncé
+### P0-3 - TP1, BE et trailing Silver Bullet ne s'exécutent pas au niveau annoncé
 
 `OnTick()` retourne tant qu'une nouvelle bougie n'est pas ouverte (`ICT_SilverBullet_Strategy.mq5:407-413`). La gestion de position se trouve après ce verrou (`:550-598`).
 
@@ -166,7 +166,7 @@ En outre, `coreTaken`, `beDone` et `runStop` avancent sans vérifier le succès 
 
 Correction requise : séparer le moteur de signal sur bougie fermée du moteur de gestion appelé à chaque tick, ou placer les sorties protectrices chez le broker.
 
-### P0-4 — Le redémarrage peut abandonner et multiplier les positions Silver Bullet
+### P0-4 - Le redémarrage peut abandonner et multiplier les positions Silver Bullet
 
 `OnInit()` ne reconstruit ni setups, ni tickets, ni niveaux, ni risque (`ICT_SilverBullet_Strategy.mq5:142-171`). `OpenTradeCount()` ne compte que les positions rattachées au tableau mémoire `g_setups` (`:263-268`).
 
@@ -182,9 +182,9 @@ Des redémarrages répétés peuvent ainsi dépasser sans borne pratique `InpMax
 
 Correction requise : reconstruire une machine d'état persistante depuis magic, symbole, commentaires, tickets réels, historique et variables globales ; compter également les positions broker correspondantes indépendamment de l'état mémoire.
 
-## 8. Risques élevés — P1
+## 8. Risques élevés - P1
 
-### P1-1 — Les résultats serveur de trading ne sont pas validés
+### P1-1 - Les résultats serveur de trading ne sont pas validés
 
 Le défaut est transversal aux deux EA.
 
@@ -206,7 +206,7 @@ Le booléen de `CTrade` ne suffit pas à confirmer l'exécution serveur. L'état
 
 Correction : centraliser toutes les opérations dans un adaptateur vérifiant retcode, deal/order/ticket, prix exécuté, volume exécuté et état broker après requête.
 
-### P1-2 — Silver Bullet calcule le risque depuis un prix théorique, pas depuis le fill
+### P1-2 - Silver Bullet calcule le risque depuis un prix théorique, pas depuis le fill
 
 Le signal calcule `entry`, SL, R, TP1, TP final et volume depuis la bougie ou le modèle (`ICT_SilverBullet_Strategy.mq5:323-360`, `:504-544`). L'ordre est ensuite envoyé au marché avec `price=0` (`:363-364`).
 
@@ -216,7 +216,7 @@ Avec les presets actuels, seul le retest EMA est actif : le problème est moins 
 
 Correction : calculer le lot avant envoi depuis l'Ask/Bid réellement exécutable, avec une tolérance maximale de slippage. Après le fill, contrôler `ResultPrice()` et `ResultVolume()`, recalculer le plan et réduire ou refuser explicitement toute exposition excédentaire.
 
-### P1-3 — Le sizing peut dépasser le risque demandé
+### P1-3 - Le sizing peut dépasser le risque demandé
 
 Silver Bullet force toujours le volume au minimum broker (`ICT_SilverBullet_Strategy.mq5:232-241`, `:339-343`). Sur un petit compte, un SL large ou un symbole volatil, le risque réel peut dépasser `InpRiskPct`.
 
@@ -228,7 +228,7 @@ Autres fragilités :
 
 Correction : refuser le trade si le lot minimum dépasse le budget, utiliser `OrderCalcProfit()` et aligner tous les prix sur la grille de tick.
 
-### P1-4 — La limite journalière Silver Bullet n'est pas une limite de compte
+### P1-4 - La limite journalière Silver Bullet n'est pas une limite de compte
 
 `g_dayRealized`, `g_dayLocked` et `g_riskLevel` sont locaux à chaque instance (`ICT_SilverBullet_Strategy.mq5:132-135`). Le PnL n'est ajouté qu'à la clôture complète d'un setup suivi (`:292-315`).
 
@@ -241,7 +241,7 @@ Avec DE30 et XAUUSD simultanément :
 
 Le Risk Manager et Silver Bullet utilisent en plus des définitions différentes de la journée. Une seule autorité de risque account-wide est nécessaire.
 
-### P1-5 — Le Risk Manager n'a pas d'architecture multi-instance sûre
+### P1-5 - Le Risk Manager n'a pas d'architecture multi-instance sûre
 
 La gestion de position est liée à `_Symbol` (`TA_RiskManager.mq5:890-891`, `:941-942`), ce qui pousse à poser plusieurs instances sur plusieurs graphiques. Mais chaque instance :
 
@@ -255,7 +255,7 @@ Résultats possibles : journaux dupliqués ou perdus, statistiques multipliées,
 
 Correction : une instance account-wide unique, ou une séparation explicite entre un service de compte singleton et des panneaux par symbole.
 
-### P1-6 — Les TP partiels du Risk Manager ne sont pas des ordres protecteurs
+### P1-6 - Les TP partiels du Risk Manager ne sont pas des ordres protecteurs
 
 Ils sont sondés une fois par seconde par timer et sur la quote courante (`TA_RiskManager.mq5:884-915`, `:1252`, `:1262`).
 
@@ -265,7 +265,7 @@ La documentation doit les présenter comme une automation locale best-effort, ou
 
 Si les sorties multiples font partie du comportement exigé pour le forward, ce constat devient lui-même bloquant avant le test.
 
-### P1-7 — Déplacement des pendings et scaling-in désynchronisent le plan
+### P1-7 - Déplacement des pendings et scaling-in désynchronisent le plan
 
 Le drag d'un pending déplace entrée, SL et TP final (`TA_RiskManager.mq5:1067-1103`), mais pas les prix de TP partiels persistés par `PlanSet()` (`:310-317`, `:418-428`). Après exécution, les sorties intermédiaires peuvent donc être immédiatement déclenchées ou se trouver au mauvais R.
 
@@ -282,13 +282,13 @@ Dans `ManageGroup()` :
 - une modification échouée peut malgré tout faire mémoriser le ticket comme consolidé (`:1024-1038`) ;
 - le BE du même cycle peut restaurer l'ancien TP capturé avant consolidation (`:935-948`, `:1000-1019`).
 
-### P1-8 — Le cap d'exposition sous-estime le risque
+### P1-8 - Le cap d'exposition sous-estime le risque
 
 `OpenRiskCash()` ignore les positions sans SL (`TA_RiskManager.mq5:243-259`) et tous les ordres pending. Plusieurs pendings peuvent donc être acceptés séparément puis dépasser le cap lorsqu'ils se déclenchent.
 
 Une position sans SL devrait bloquer les nouvelles entrées ou être comptée comme risque non borné. Les pendings doivent être intégrés avec leur volume et leur SL projeté.
 
-### P1-9 — Le journal du Risk Manager peut manquer ou doubler des clôtures
+### P1-9 - Le journal du Risk Manager peut manquer ou doubler des clôtures
 
 Le handler récupère `DEAL_POSITION_ID`, puis l'utilise comme ticket dans `PositionSelectByTicket()` (`TA_RiskManager.mq5:1350-1356`). Or identifiant et ticket n'ont pas la même garantie de stabilité.
 
@@ -298,7 +298,7 @@ Le handler effectue aussi un traitement lourd : agrégation de l'historique, éc
 
 Références : [OnTradeTransaction](https://www.mql5.com/en/docs/event_handlers/ontradetransaction), [propriétés des positions](https://www.mql5.com/en/docs/constants/tradingconstants/positionproperties).
 
-### P1-10 — Les métriques de risque du Risk Manager ne sont pas fiables dans la durée
+### P1-10 - Les métriques de risque du Risk Manager ne sont pas fiables dans la durée
 
 Le registre initial est limité à 200 positions et n'est jamais purgé (`TA_RiskManager.mq5:112-116`, `:437-468`). Il n'est pas persisté.
 
@@ -313,7 +313,7 @@ Cas incorrects :
 
 Le grade, le risque monétaire initial, le volume initial et la politique de risque doivent être capturés à l'entrée et persistés par `POSITION_IDENTIFIER`.
 
-### P1-11 — Les limites d'équité confondent PnL et flux de capital
+### P1-11 - Les limites d'équité confondent PnL et flux de capital
 
 `dayEq` et `peak` ne distinguent pas profit/perte, dépôt et retrait (`TA_RiskManager.mq5:820-845`). La garde ne réinitialise qu'au-delà de ×3 ou en dessous de ×0,3 (`:835-840`).
 
@@ -321,7 +321,7 @@ Un retrait ordinaire peut donc provoquer une fausse perte journalière ou un fau
 
 La politique exacte doit être définie, nommée correctement et testée avec dépôts, retraits, crédits et PnL flottant.
 
-### P1-12 — Les modèles FVG et OTE contiennent des prix asymétriques ou inexistants
+### P1-12 - Les modèles FVG et OTE contiennent des prix asymétriques ou inexistants
 
 FVG baissière : quand `h2 < l4`, le code stocke `fvgTop=h2` et `fvgBot=l4` (`ICT_SilverBullet_Strategy.mq5:457-462`, Signals `:685-689`). Le test short exige ensuite de traverser tout le gap (`Strategy:513-514`, Signals `:734-735`), contrairement au comportement long.
 
@@ -329,19 +329,19 @@ OTE : une simple touche de 62 % peut produire une entrée théorique au sweet sp
 
 Les presets DE30/XAU désactivent FVG et OTE. Ces défauts sont donc dormants pour ces deux configurations, mais ils affectent les valeurs par défaut, les autres usages et la fiche MGC qui active FVG.
 
-### P1-13 — Le modèle EMA actif ne garantit pas discount/premium
+### P1-13 - Le modèle EMA actif ne garantit pas discount/premium
 
 La documentation décrit un retracement dans le discount/premium avant une entrée FVG, OTE ou EMA (`README.md:154`, fiche des sets `README.md:3`). Le déclencheur EMA ne teste pourtant jamais le midpoint de la jambe (`ICT_SilverBullet_Strategy.mq5:536-541`, Signals `:754-758`).
 
 DE30 et XAU désactivent FVG et OTE : leur seul modèle d'entrée est précisément ce retest EMA non borné. Les configurations présentées comme validées ne correspondent donc pas strictement au modèle décrit.
 
-### P1-14 — Les mêmes liquidités et MSS peuvent être réutilisés
+### P1-14 - Les mêmes liquidités et MSS peuvent être réutilisés
 
 `AlreadySwept()` ne consulte que les setups actuellement en mémoire (`ICT_SilverBullet_Strategy.mq5:277-282`, Signals `:275-280`). Une fois un setup supprimé, le niveau n'est plus mémorisé comme consommé et peut immédiatement créer un nouveau setup.
 
 Par ailleurs, `g_mssBar` est rafraîchi à chaque clôture qui reste au-delà du même swing (`Strategy:451-455`, Signals `:680-683`). `InpMssLookback` ne mesure donc pas toujours l'âge de la cassure initiale.
 
-### P1-15 — Le compte hedging requis n'est jamais validé
+### P1-15 - Le compte hedging requis n'est jamais validé
 
 Silver Bullet et le Risk Manager utilisent `PositionClosePartial`, mais aucun `OnInit()` ne vérifie `ACCOUNT_MARGIN_MODE` (`ICT_SilverBullet_Strategy.mq5:142-171`, `TA_RiskManager.mq5:1239-1254`).
 
@@ -349,7 +349,7 @@ En netting, les positions fusionnent, le mapping setup/plan vers position devien
 
 Correction : refuser explicitement le netting tant qu'une branche dédiée n'existe pas.
 
-### P1-16 — Silver Bullet confond l'identifiant de position et son ticket
+### P1-16 - Silver Bullet confond l'identifiant de position et son ticket
 
 Après l'ouverture, Silver Bullet stocke `DEAL_POSITION_ID` (`ICT_SilverBullet_Strategy.mq5:371-375`), puis l'utilise comme ticket dans `PositionSelectByTicket`, `PositionClosePartial` et `PositionModify` (`:267`, `:551`, `:569-576`, `:588-595`).
 
@@ -357,13 +357,13 @@ L'identifiant suit la position pendant tout son cycle de vie, tandis que son tic
 
 Correction : persister l'identifiant comme clé métier, mais résoudre et vérifier le ticket courant avant chaque opération.
 
-### P1-17 — Un volume indivisible désactive BE et trailing Silver Bullet
+### P1-17 - Un volume indivisible désactive BE et trailing Silver Bullet
 
 Quand le volume est trop petit pour permettre une clôture partielle, `coreLots=0` et `coreTaken=true` (`ICT_SilverBullet_Strategy.mq5:345-353`, `:380`). Or `beDone` n'est activé que dans le bloc `!coreTaken` (`:563-581`) et le trailing exige ensuite `beDone`.
 
 La position censée devenir « tout runner » reste donc au TP fixe final. Sur les petits comptes et symboles à volume minimum élevé, cela change directement la stratégie backtestée et mérite une correction avant validation.
 
-### P1-18 — TopDown peut conserver des cassures intrabar disparues à la clôture
+### P1-18 - TopDown peut conserver des cassures intrabar disparues à la clôture
 
 Les trois constats TopDown suivants sont classés P1 pour leur impact potentiel sur une décision discrétionnaire et la fidélité des grades, même si cet indicateur ne passe aucun ordre lui-même.
 
@@ -373,13 +373,13 @@ Si le prix franchit un niveau puis réintègre avant la clôture, les drapeaux d
 
 Correction : calculer les événements structurels sur bougie clôturée, ou rendre l'état intrabar explicitement provisoire et réversible.
 
-### P1-19 — Les anciens OTE TopDown sont gradés avec le biais actuel
+### P1-19 - Les anciens OTE TopDown sont gradés avec le biais actuel
 
 `DrawOte()` reçoit un index historique, mais appelle `StackState()` sans date (`ICT_TopDown_Confluence.mq5:876-890`). `StackState()` part du shift zéro courant (`:307-321`).
 
 Tous les anciens OTE sont donc reclassés A+ avec le biais du moment du chargement. Deux chargements à des dates différentes peuvent modifier rétroactivement les labels historiques.
 
-### P1-20 — Les objets historiques TopDown utilisent une conversion horaire instable
+### P1-20 - Les objets historiques TopDown utilisent une conversion horaire instable
 
 `gmtOff` est l'offset serveur actuel (`ICT_TopDown_Confluence.mq5:643`, `:717`) et est appliqué aux dates historiques (`:190-199`). Un historique couvrant les changements GMT+2/GMT+3 peut être décalé d'une heure selon la saison au moment du chargement.
 
@@ -387,7 +387,7 @@ Tous les anciens OTE sont donc reclassés A+ avec le biais du moment du chargeme
 
 Les objets vieillissants ne sont pas systématiquement supprimés pendant une session longue ; cette sélection erronée peut donc aussi laisser s'accumuler des killzones et macros hors de la fenêtre attendue.
 
-## 9. Risques moyens — P2
+## 9. Risques moyens - P2
 
 ### 9.1 Silver Bullet Strategy
 
@@ -580,7 +580,7 @@ Réserves :
 
 ## 14. Plan de remédiation
 
-### Phase A — avant tout nouveau forward automatisé
+### Phase A - avant tout nouveau forward automatisé
 
 1. Définir la politique du Risk Manager : soit conformité account-wide dure, soit verrou opérateur souple. En mode dur, rendre le flat permanent et idempotent : supprimer tous les pendings du compte, fermer les positions, vérifier les retcodes et rescanner tant que la limite est active.
 2. Séparer gestion intrabar et génération de signaux Silver Bullet ; exécuter ou protéger TP1/BE/trailing au bon moment.
@@ -589,7 +589,7 @@ Réserves :
 5. Mettre en place un adaptateur commun contrôlant chaque réponse serveur.
 6. Décider d'une architecture Risk Manager singleton avant toute utilisation multi-symbole.
 
-### Phase B — avant de faire confiance aux statistiques
+### Phase B - avant de faire confiance aux statistiques
 
 1. Recalculer le plan Silver Bullet depuis le fill réel et refuser tout dépassement de risque au lot minimum.
 2. Corriger la FVG short, l'intersection OTE, la borne 79 %, la consommation des sweeps et l'âge du MSS.
@@ -599,7 +599,7 @@ Réserves :
 6. Réancrer atomiquement tous les SL, TP finaux et TP partiels lors d'un drag ou scaling-in.
 7. Rejouer IS/OOS et holdout en vrais ticks avec artefacts complets versionnés.
 
-### Phase C — fidélité des indicateurs et robustesse
+### Phase C - fidélité des indicateurs et robustesse
 
 1. Calculer la structure TopDown sur clôture ou gérer un état provisoire réversible.
 2. Calculer chaque grade A+ avec le biais de sa date historique.
@@ -609,7 +609,7 @@ Réserves :
 6. Valider tous les handles et rejouer proprement l'historique après réinitialisation.
 7. Ajouter une validation exhaustive des inputs et capacités broker dans chaque `OnInit()`.
 
-### Phase D — nettoyage et industrialisation
+### Phase D - nettoyage et industrialisation
 
 1. Choisir pour les artefacts Structure OTE : suppression cohérente ou déplacement dans un dossier `archive/` clairement étiqueté.
 2. Mettre à jour README, REPORTS, dashboard et liens afin qu'ils décrivent uniquement le HEAD courant.

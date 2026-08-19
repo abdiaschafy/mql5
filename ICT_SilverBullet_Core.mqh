@@ -5,6 +5,7 @@
 // Ce fichier est inclus par l'EA, l'indicateur et les tests C++.
 
 #define SBL_MAX_CONSUMED 512
+#define SBL_MAX_FVG_CANDIDATES 4
 
 enum SblDirection
 {
@@ -54,7 +55,7 @@ struct SblBar
    long   windowKey;
 };
 
-// Pivot interne strict : deux bougies a gauche et deux a droite.
+// Pivot interne strict : une ou deux bougies de chaque cote selon strength.
 // Pour un LONG, price est un swing high ; pour un SHORT, un swing low.
 struct SblPivot
 {
@@ -84,7 +85,11 @@ struct SblConfig
    double oteLow;
    double oteHigh;
    int    expiryBars;
+   int    maxFvgCandidates;
    bool   requireWindow;
+   bool   requireDirectionalRejection;
+   bool   allowMssBeforeTarget;
+   bool   allowTargetBeforeInternalPivot;
    bool   useFvgTrigger;
    bool   useOteTrigger;
    bool   useEmaTrigger;
@@ -115,6 +120,10 @@ struct SblSetup
    int    internalPivotConfirmedBar;
    long   internalPivotConfirmedTime;
 
+   bool   hasPendingMss;
+   int    pendingMssBar;
+   long   pendingMssTime;
+
    bool   targetTaken;
    int    targetBar;
    long   targetTime;
@@ -135,6 +144,14 @@ struct SblSetup
    double candidateFvgHigh;
    int    candidateFvgBar;
    long   candidateFvgTime;
+
+   // Pool fixe. Les champs candidateFvg* ci-dessus restent le miroir public
+   // du premier slot afin de conserver le contrat des anciens adaptateurs.
+   int    candidateFvgCount;
+   double candidateFvgLows[SBL_MAX_FVG_CANDIDATES];
+   double candidateFvgHighs[SBL_MAX_FVG_CANDIDATES];
+   int    candidateFvgBars[SBL_MAX_FVG_CANDIDATES];
+   long   candidateFvgTimes[SBL_MAX_FVG_CANDIDATES];
 
    bool   hasContextFvg;
    double fvgLow;
@@ -240,6 +257,9 @@ void SblResetSetup(SblSetup &setup)
    setup.internalPivotTime = 0;
    setup.internalPivotConfirmedBar = -1;
    setup.internalPivotConfirmedTime = 0;
+   setup.hasPendingMss = false;
+   setup.pendingMssBar = -1;
+   setup.pendingMssTime = 0;
    setup.targetTaken = false;
    setup.targetBar = -1;
    setup.targetTime = 0;
@@ -257,6 +277,14 @@ void SblResetSetup(SblSetup &setup)
    setup.candidateFvgHigh = 0.0;
    setup.candidateFvgBar = -1;
    setup.candidateFvgTime = 0;
+   setup.candidateFvgCount = 0;
+   for(int i = 0; i < SBL_MAX_FVG_CANDIDATES; i++)
+   {
+      setup.candidateFvgLows[i] = 0.0;
+      setup.candidateFvgHighs[i] = 0.0;
+      setup.candidateFvgBars[i] = -1;
+      setup.candidateFvgTimes[i] = 0;
+   }
    setup.hasContextFvg = false;
    setup.fvgLow = 0.0;
    setup.fvgHigh = 0.0;
@@ -472,7 +500,7 @@ void SblDetectFvg(const SblBar &newest, const SblBar &oldest,
    }
 }
 
-void SblDetectInternalPivot(int direction,
+void SblDetectInternalPivot(int direction, int strength,
                             const SblBar &twoBefore,
                             const SblBar &oneBefore,
                             const SblBar &candidate,
@@ -481,32 +509,44 @@ void SblDetectInternalPivot(int direction,
                             SblPivot &pivot)
 {
    SblResetPivot(pivot);
-   if(oneBefore.index != twoBefore.index + 1 ||
-      candidate.index != oneBefore.index + 1 ||
+   if(strength != 1 && strength != 2)
+      return;
+
+   // Le pivot 1/1 ne depend que de ses trois bougies causales. Les bougies
+   // externes restent dans la signature afin que les adaptateurs partagent le
+   // meme buffer, mais elles ne doivent ni filtrer ni retarder sa confirmation.
+   if(candidate.index != oneBefore.index + 1 ||
       oneAfter.index != candidate.index + 1 ||
-      twoAfter.index != oneAfter.index + 1 ||
-      oneBefore.time <= twoBefore.time ||
       candidate.time <= oneBefore.time ||
-      oneAfter.time <= candidate.time ||
-      twoAfter.time <= oneAfter.time)
+      oneAfter.time <= candidate.time)
+      return;
+
+   // Pour strength=2, conserver strictement le contrat historique 2/2.
+   if(strength == 2 &&
+      (oneBefore.index != twoBefore.index + 1 ||
+       twoAfter.index != oneAfter.index + 1 ||
+       oneBefore.time <= twoBefore.time ||
+       twoAfter.time <= oneAfter.time))
       return;
 
    bool present = false;
    double price = 0.0;
    if(direction == SBL_LONG)
    {
-      present = candidate.high > twoBefore.high &&
-                candidate.high > oneBefore.high &&
-                candidate.high > oneAfter.high &&
-                candidate.high > twoAfter.high;
+      present = candidate.high > oneBefore.high &&
+                candidate.high > oneAfter.high;
+      if(strength == 2)
+         present = present && candidate.high > twoBefore.high &&
+                   candidate.high > twoAfter.high;
       price = candidate.high;
    }
    else if(direction == SBL_SHORT)
    {
-      present = candidate.low < twoBefore.low &&
-                candidate.low < oneBefore.low &&
-                candidate.low < oneAfter.low &&
-                candidate.low < twoAfter.low;
+      present = candidate.low < oneBefore.low &&
+                candidate.low < oneAfter.low;
+      if(strength == 2)
+         present = present && candidate.low < twoBefore.low &&
+                   candidate.low < twoAfter.low;
       price = candidate.low;
    }
    if(!present)
@@ -517,8 +557,21 @@ void SblDetectInternalPivot(int direction,
    pivot.price = price;
    pivot.pivotBar = candidate.index;
    pivot.pivotTime = candidate.time;
-   pivot.confirmedBar = twoAfter.index;
-   pivot.confirmedTime = twoAfter.time;
+   pivot.confirmedBar = strength == 1 ? oneAfter.index : twoAfter.index;
+   pivot.confirmedTime = strength == 1 ? oneAfter.time : twoAfter.time;
+}
+
+// Signature historique : les adaptateurs non migres restent strictement 2/2.
+void SblDetectInternalPivot(int direction,
+                            const SblBar &twoBefore,
+                            const SblBar &oneBefore,
+                            const SblBar &candidate,
+                            const SblBar &oneAfter,
+                            const SblBar &twoAfter,
+                            SblPivot &pivot)
+{
+   SblDetectInternalPivot(direction,2,twoBefore,oneBefore,candidate,
+                          oneAfter,twoAfter,pivot);
 }
 
 // Une outside bar peut etre simultanement le plus haut et le plus bas des
@@ -597,7 +650,8 @@ bool SblDirectionalRejection(int direction, const SblBar &bar)
 bool SblEmaTrigger(int direction, const SblBar &bar,
                    double fib0, double fib1)
 {
-   if(bar.emaFast <= 0.0 || !SblPriceInValueArea(direction, bar.emaFast, fib0, fib1))
+   if(bar.emaFast <= 0.0 ||
+      !SblPriceInValueArea(direction,bar.emaFast,fib0,fib1))
       return false;
    if(bar.low > bar.emaFast || bar.high < bar.emaFast)
       return false;
@@ -606,6 +660,14 @@ bool SblEmaTrigger(int direction, const SblBar &bar,
    if(direction == SBL_SHORT)
       return bar.close <= bar.emaFast && bar.close < bar.open;
    return false;
+}
+
+bool SblEmaTouched(int direction, const SblBar &bar,
+                   double fib0, double fib1)
+{
+   return bar.emaFast > 0.0 &&
+          SblPriceInValueArea(direction,bar.emaFast,fib0,fib1) &&
+          bar.low <= bar.emaFast && bar.high >= bar.emaFast;
 }
 
 bool SblRegistryContains(const SblConsumedRegistry &registry,
@@ -760,8 +822,65 @@ bool SblCandidateFvgInvalidated(const SblSetup &setup, const SblBar &bar)
    return bar.close > setup.candidateFvgHigh;
 }
 
+int SblBoundMaxFvgCandidates(int requested)
+{
+   if(requested < 1)
+      return 1;
+   if(requested > SBL_MAX_FVG_CANDIDATES)
+      return SBL_MAX_FVG_CANDIDATES;
+   return requested;
+}
+
+void SblResetCandidateFvgSlot(SblSetup &setup, int slot)
+{
+   if(slot < 0 || slot >= SBL_MAX_FVG_CANDIDATES)
+      return;
+   setup.candidateFvgLows[slot] = 0.0;
+   setup.candidateFvgHighs[slot] = 0.0;
+   setup.candidateFvgBars[slot] = -1;
+   setup.candidateFvgTimes[slot] = 0;
+}
+
+void SblSyncLegacyCandidateFvg(SblSetup &setup)
+{
+   if(setup.candidateFvgCount <= 0)
+   {
+      setup.candidateFvgCount = 0;
+      setup.hasCandidateFvg = false;
+      setup.candidateFvgLow = 0.0;
+      setup.candidateFvgHigh = 0.0;
+      setup.candidateFvgBar = -1;
+      setup.candidateFvgTime = 0;
+      return;
+   }
+
+   setup.hasCandidateFvg = true;
+   setup.candidateFvgLow = setup.candidateFvgLows[0];
+   setup.candidateFvgHigh = setup.candidateFvgHighs[0];
+   setup.candidateFvgBar = setup.candidateFvgBars[0];
+   setup.candidateFvgTime = setup.candidateFvgTimes[0];
+}
+
+// Importe un eventuel etat legacy initialise directement par un ancien
+// adaptateur. Les setups crees par ce moteur possedent deja le pool synchronise.
+void SblHydrateCandidateFvgPool(SblSetup &setup)
+{
+   if(setup.candidateFvgCount > 0 || !setup.hasCandidateFvg)
+      return;
+   setup.candidateFvgCount = 1;
+   setup.candidateFvgLows[0] = SblMin(setup.candidateFvgLow,
+                                      setup.candidateFvgHigh);
+   setup.candidateFvgHighs[0] = SblMax(setup.candidateFvgLow,
+                                       setup.candidateFvgHigh);
+   setup.candidateFvgBars[0] = setup.candidateFvgBar;
+   setup.candidateFvgTimes[0] = setup.candidateFvgTime;
+}
+
 void SblClearCandidateFvg(SblSetup &setup)
 {
+   for(int i = 0; i < SBL_MAX_FVG_CANDIDATES; i++)
+      SblResetCandidateFvgSlot(setup,i);
+   setup.candidateFvgCount = 0;
    setup.hasCandidateFvg = false;
    setup.candidateFvgLow = 0.0;
    setup.candidateFvgHigh = 0.0;
@@ -769,7 +888,117 @@ void SblClearCandidateFvg(SblSetup &setup)
    setup.candidateFvgTime = 0;
 }
 
-bool SblCacheCandidateFvg(SblSetup &setup, const SblFvg &fvg)
+void SblSetCandidateFvgSlot(SblSetup &setup, int slot,
+                            double low, double high,
+                            int formedBar, long formedTime)
+{
+   if(slot < 0 || slot >= SBL_MAX_FVG_CANDIDATES)
+      return;
+   setup.candidateFvgLows[slot] = SblMin(low,high);
+   setup.candidateFvgHighs[slot] = SblMax(low,high);
+   setup.candidateFvgBars[slot] = formedBar;
+   setup.candidateFvgTimes[slot] = formedTime;
+}
+
+bool SblSameCandidateFvg(const SblSetup &setup, int slot,
+                         double low, double high,
+                         int formedBar, long formedTime)
+{
+   return slot >= 0 && slot < setup.candidateFvgCount &&
+          setup.candidateFvgLows[slot] == low &&
+          setup.candidateFvgHighs[slot] == high &&
+          setup.candidateFvgBars[slot] == formedBar &&
+          setup.candidateFvgTimes[slot] == formedTime;
+}
+
+bool SblCandidateFormationOlder(int firstBar, long firstTime,
+                                int secondBar, long secondTime)
+{
+   if(firstTime != secondTime)
+      return firstTime < secondTime;
+   return firstBar < secondBar;
+}
+
+bool SblCandidateMoreRobust(int direction,
+                            double firstLow, double firstHigh,
+                            int firstBar, long firstTime,
+                            double secondLow, double secondHigh,
+                            int secondBar, long secondTime)
+{
+   if(direction == SBL_LONG)
+   {
+      if(firstLow != secondLow)
+         return firstLow < secondLow;
+   }
+   else if(direction == SBL_SHORT)
+   {
+      if(firstHigh != secondHigh)
+         return firstHigh > secondHigh;
+   }
+   return SblCandidateFormationOlder(firstBar,firstTime,
+                                     secondBar,secondTime);
+}
+
+bool SblCandidatePreferredForPool(const SblSetup &setup,
+                                  double firstLow, double firstHigh,
+                                  int firstBar, long firstTime,
+                                  double secondLow, double secondHigh,
+                                  int secondBar, long secondTime)
+{
+   bool firstInValue = SblFvgInValueArea(setup.direction,
+                                          firstLow,firstHigh,
+                                          setup.fib0,setup.legExtreme);
+   bool secondInValue = SblFvgInValueArea(setup.direction,
+                                           secondLow,secondHigh,
+                                           setup.fib0,setup.legExtreme);
+   if(firstInValue != secondInValue)
+      return firstInValue;
+   return SblCandidateMoreRobust(setup.direction,
+                                 firstLow,firstHigh,firstBar,firstTime,
+                                 secondLow,secondHigh,secondBar,secondTime);
+}
+
+void SblRemoveCandidateFvgSlot(SblSetup &setup, int slot)
+{
+   if(slot < 0 || slot >= setup.candidateFvgCount)
+      return;
+   for(int i = slot + 1; i < setup.candidateFvgCount; i++)
+   {
+      setup.candidateFvgLows[i - 1] = setup.candidateFvgLows[i];
+      setup.candidateFvgHighs[i - 1] = setup.candidateFvgHighs[i];
+      setup.candidateFvgBars[i - 1] = setup.candidateFvgBars[i];
+      setup.candidateFvgTimes[i - 1] = setup.candidateFvgTimes[i];
+   }
+   setup.candidateFvgCount--;
+   SblResetCandidateFvgSlot(setup,setup.candidateFvgCount);
+}
+
+void SblTrimCandidateFvgPool(SblSetup &setup, int requestedMaximum)
+{
+   int maximum = SblBoundMaxFvgCandidates(requestedMaximum);
+   SblHydrateCandidateFvgPool(setup);
+   while(setup.candidateFvgCount > maximum)
+   {
+      int weakest = 0;
+      for(int i = 1; i < setup.candidateFvgCount; i++)
+      {
+         if(SblCandidatePreferredForPool(
+               setup,
+               setup.candidateFvgLows[weakest],
+               setup.candidateFvgHighs[weakest],
+               setup.candidateFvgBars[weakest],
+               setup.candidateFvgTimes[weakest],
+               setup.candidateFvgLows[i],setup.candidateFvgHighs[i],
+               setup.candidateFvgBars[i],setup.candidateFvgTimes[i]))
+            weakest = i;
+      }
+      SblRemoveCandidateFvgSlot(setup,weakest);
+   }
+   SblSyncLegacyCandidateFvg(setup);
+}
+
+bool SblCacheCandidateFvg(SblSetup &setup, const SblFvg &fvg,
+                          int requestedMaximum)
 {
    if(!fvg.present || fvg.direction != setup.direction ||
       fvg.formedBar <= setup.purgeBar + 2 ||
@@ -778,34 +1007,106 @@ bool SblCacheCandidateFvg(SblSetup &setup, const SblFvg &fvg)
 
    double low = SblMin(fvg.low, fvg.high);
    double high = SblMax(fvg.low, fvg.high);
+   int maximum = SblBoundMaxFvgCandidates(requestedMaximum);
+   SblHydrateCandidateFvgPool(setup);
+   SblTrimCandidateFvgPool(setup,maximum);
 
-   bool replace = !setup.hasCandidateFvg;
-   if(setup.hasCandidateFvg)
+   for(int i = 0; i < setup.candidateFvgCount; i++)
+      if(SblSameCandidateFvg(setup,i,low,high,
+                             fvg.formedBar,fvg.formedTime))
+         return true;
+
+   // Capacite 1 : contrat historique strictement inchange.
+   if(maximum == 1)
    {
-      bool currentInValue = SblFvgInValueArea(setup.direction,
-                                               setup.candidateFvgLow,
-                                               setup.candidateFvgHigh,
-                                               setup.fib0,
-                                               setup.legExtreme);
-      bool newInValue = SblFvgInValueArea(setup.direction,low,high,
-                                           setup.fib0,
-                                           setup.legExtreme);
-      if(newInValue != currentInValue)
-         replace = newInValue;
-      else if(setup.direction == SBL_LONG)
-         replace = high < setup.candidateFvgHigh;
-      else
-         replace = low > setup.candidateFvgLow;
+      bool replace = setup.candidateFvgCount == 0;
+      if(setup.candidateFvgCount > 0)
+      {
+         bool currentInValue = SblFvgInValueArea(
+            setup.direction,setup.candidateFvgLows[0],
+            setup.candidateFvgHighs[0],setup.fib0,setup.legExtreme);
+         bool newInValue = SblFvgInValueArea(setup.direction,low,high,
+                                              setup.fib0,setup.legExtreme);
+         if(newInValue != currentInValue)
+            replace = newInValue;
+         else if(setup.direction == SBL_LONG)
+            replace = high < setup.candidateFvgHighs[0];
+         else
+            replace = low > setup.candidateFvgLows[0];
+      }
+
+      if(replace)
+      {
+         SblSetCandidateFvgSlot(setup,0,low,high,
+                                fvg.formedBar,fvg.formedTime);
+         setup.candidateFvgCount = 1;
+         SblSyncLegacyCandidateFvg(setup);
+      }
+      return true;
    }
 
-   if(!replace)
+   if(setup.candidateFvgCount < maximum)
+   {
+      int slot = setup.candidateFvgCount;
+      SblSetCandidateFvgSlot(setup,slot,low,high,
+                             fvg.formedBar,fvg.formedTime);
+      setup.candidateFvgCount++;
+      SblSyncLegacyCandidateFvg(setup);
       return true;
-   setup.hasCandidateFvg = true;
-   setup.candidateFvgLow = low;
-   setup.candidateFvgHigh = high;
-   setup.candidateFvgBar = fvg.formedBar;
-   setup.candidateFvgTime = fvg.formedTime;
+   }
+
+   // Pool plein : remplacer uniquement la candidate la moins utile si la
+   // nouvelle est preferable. Le classement reste deterministe.
+   int weakest = 0;
+   for(int i = 1; i < setup.candidateFvgCount; i++)
+   {
+      if(SblCandidatePreferredForPool(
+            setup,
+            setup.candidateFvgLows[weakest],
+            setup.candidateFvgHighs[weakest],
+            setup.candidateFvgBars[weakest],
+            setup.candidateFvgTimes[weakest],
+            setup.candidateFvgLows[i],setup.candidateFvgHighs[i],
+            setup.candidateFvgBars[i],setup.candidateFvgTimes[i]))
+         weakest = i;
+   }
+   if(SblCandidatePreferredForPool(
+         setup,low,high,fvg.formedBar,fvg.formedTime,
+         setup.candidateFvgLows[weakest],
+         setup.candidateFvgHighs[weakest],
+         setup.candidateFvgBars[weakest],
+         setup.candidateFvgTimes[weakest]))
+      SblSetCandidateFvgSlot(setup,weakest,low,high,
+                             fvg.formedBar,fvg.formedTime);
+   SblSyncLegacyCandidateFvg(setup);
    return true;
+}
+
+// Signature historique : une seule candidate et politique de remplacement
+// identique a la revision precedente.
+bool SblCacheCandidateFvg(SblSetup &setup, const SblFvg &fvg)
+{
+   return SblCacheCandidateFvg(setup,fvg,1);
+}
+
+bool SblInvalidateCandidateFvgs(SblSetup &setup, const SblBar &bar,
+                                int requestedMaximum)
+{
+   SblHydrateCandidateFvgPool(setup);
+   SblTrimCandidateFvgPool(setup,requestedMaximum);
+   bool invalidated = false;
+   for(int i = setup.candidateFvgCount - 1; i >= 0; i--)
+   {
+      bool invalid = setup.direction == SBL_LONG
+                     ? bar.close < setup.candidateFvgLows[i]
+                     : bar.close > setup.candidateFvgHighs[i];
+      if(!invalid)
+         continue;
+      SblRemoveCandidateFvgSlot(setup,i);
+      invalidated = true;
+   }
+   SblSyncLegacyCandidateFvg(setup);
+   return invalidated;
 }
 
 void SblStoreContextFvg(SblSetup &setup, const SblFvg &fvg)
@@ -817,22 +1118,63 @@ void SblStoreContextFvg(SblSetup &setup, const SblFvg &fvg)
    setup.fvgTime = fvg.formedTime;
 }
 
-bool SblPromoteCandidateFvg(SblSetup &setup)
+bool SblHasPromotableCandidateFvg(const SblSetup &setup)
 {
-   if(!setup.hasCandidateFvg ||
-      !SblFvgInValueArea(setup.direction,
-                         setup.candidateFvgLow,
-                         setup.candidateFvgHigh,
-                         setup.fib0,setup.legExtreme))
+   int count = setup.candidateFvgCount;
+   if(count <= 0 && setup.hasCandidateFvg)
+      return SblFvgInValueArea(setup.direction,
+                               setup.candidateFvgLow,
+                               setup.candidateFvgHigh,
+                               setup.fib0,setup.legExtreme);
+   if(count > SBL_MAX_FVG_CANDIDATES)
+      count = SBL_MAX_FVG_CANDIDATES;
+   for(int i = 0; i < count; i++)
+      if(SblFvgInValueArea(setup.direction,
+                           setup.candidateFvgLows[i],
+                           setup.candidateFvgHighs[i],
+                           setup.fib0,setup.legExtreme))
+         return true;
+   return false;
+}
+
+bool SblPromoteCandidateFvg(SblSetup &setup, int requestedMaximum)
+{
+   SblHydrateCandidateFvgPool(setup);
+   SblTrimCandidateFvgPool(setup,requestedMaximum);
+
+   int selected = -1;
+   for(int i = 0; i < setup.candidateFvgCount; i++)
+   {
+      if(!SblFvgInValueArea(setup.direction,
+                            setup.candidateFvgLows[i],
+                            setup.candidateFvgHighs[i],
+                            setup.fib0,setup.legExtreme))
+         continue;
+      if(selected < 0 || SblCandidateMoreRobust(
+            setup.direction,
+            setup.candidateFvgLows[i],setup.candidateFvgHighs[i],
+            setup.candidateFvgBars[i],setup.candidateFvgTimes[i],
+            setup.candidateFvgLows[selected],
+            setup.candidateFvgHighs[selected],
+            setup.candidateFvgBars[selected],
+            setup.candidateFvgTimes[selected]))
+         selected = i;
+   }
+   if(selected < 0)
       return false;
 
    setup.hasContextFvg = true;
-   setup.fvgLow = setup.candidateFvgLow;
-   setup.fvgHigh = setup.candidateFvgHigh;
-   setup.fvgBar = setup.candidateFvgBar;
-   setup.fvgTime = setup.candidateFvgTime;
+   setup.fvgLow = setup.candidateFvgLows[selected];
+   setup.fvgHigh = setup.candidateFvgHighs[selected];
+   setup.fvgBar = setup.candidateFvgBars[selected];
+   setup.fvgTime = setup.candidateFvgTimes[selected];
    SblClearCandidateFvg(setup);
    return true;
+}
+
+bool SblPromoteCandidateFvg(SblSetup &setup)
+{
+   return SblPromoteCandidateFvg(setup,1);
 }
 
 bool SblTryStoreContextFvg(SblSetup &setup, const SblFvg &fvg)
@@ -853,11 +1195,16 @@ bool SblTryStoreContextFvg(SblSetup &setup, const SblFvg &fvg)
 bool SblStoreInternalPivot(SblSetup &setup, const SblPivot &pivot,
                            const SblBar &bar)
 {
-   if(!pivot.present || pivot.direction != setup.direction ||
+   if(!pivot.present)
+      return false;
+   bool validConfirmationDistance =
+      pivot.confirmedBar == pivot.pivotBar + 1 ||
+      pivot.confirmedBar == pivot.pivotBar + 2;
+   if(pivot.direction != setup.direction ||
       pivot.price <= 0.0 ||
       pivot.pivotBar <= setup.purgeBar ||
       pivot.pivotTime <= setup.purgeTime ||
-      pivot.confirmedBar != pivot.pivotBar + 2 ||
+      !validConfirmationDistance ||
       pivot.confirmedTime <= pivot.pivotTime ||
       pivot.confirmedBar > bar.index ||
       pivot.confirmedTime > bar.time)
@@ -906,6 +1253,23 @@ void SblExposeTargetConsumption(const SblSetup &setup,
                         ? setup.refHighTime : setup.refLowTime;
 }
 
+// La premiere prise de cible est un fait immuable. Cette centralisation evite
+// qu'une meche ulterieure rehorodate la cible ou la reconsomme pendant que le
+// setup flexible attend encore son pivot interne.
+bool SblRecordTargetOnce(SblSetup &setup, const SblBar &bar,
+                         SblDecision &decision)
+{
+   if(setup.targetTaken)
+      return false;
+   setup.targetTaken = true;
+   setup.targetBar = bar.index;
+   setup.targetTime = bar.time;
+   setup.breakBar = bar.index;
+   setup.breakTime = bar.time;
+   SblExposeTargetConsumption(setup,decision);
+   return true;
+}
+
 bool SblInternalMssCrossed(const SblSetup &setup, const SblBar &bar)
 {
    if(!setup.hasInternalPivot || bar.previousClose <= 0.0)
@@ -919,6 +1283,63 @@ bool SblInternalMssCrossed(const SblSetup &setup, const SblBar &bar)
    return false;
 }
 
+void SblClearPendingMss(SblSetup &setup)
+{
+   setup.hasPendingMss = false;
+   setup.pendingMssBar = -1;
+   setup.pendingMssTime = 0;
+}
+
+// Un MSS anticipe ne peut etre observe qu'apres la cloture ayant confirme le
+// pivot interne. Les deux axes (index et temps) sont controles pour empecher
+// qu'un buffer mal indexe ne rende un evenement futur retroactif.
+bool SblBarAfterInternalPivotConfirmation(const SblSetup &setup,
+                                           const SblBar &bar)
+{
+   return setup.hasInternalPivot &&
+          bar.index > setup.internalPivotConfirmedBar &&
+          bar.time > setup.internalPivotConfirmedTime &&
+          bar.index > setup.purgeBar &&
+          bar.time > setup.purgeTime;
+}
+
+// Memorise uniquement le premier vrai croisement. Les champs mssBar/mssTime
+// restent reserves a un MSS confirme par la prise de cible externe.
+bool SblStorePendingMss(SblSetup &setup, const SblBar &bar)
+{
+   if(setup.phase != SBL_PHASE_WAIT_TARGET || setup.hasPendingMss ||
+      !SblBarAfterInternalPivotConfirmation(setup,bar) ||
+      !SblInternalMssCrossed(setup,bar))
+      return false;
+   setup.hasPendingMss = true;
+   setup.pendingMssBar = bar.index;
+   setup.pendingMssTime = bar.time;
+   return true;
+}
+
+bool SblPendingMssPrecedesTarget(const SblSetup &setup)
+{
+   return setup.hasPendingMss && setup.targetTaken &&
+          setup.pendingMssBar > setup.internalPivotConfirmedBar &&
+          setup.pendingMssTime > setup.internalPivotConfirmedTime &&
+          setup.pendingMssBar > setup.purgeBar &&
+          setup.pendingMssTime > setup.purgeTime &&
+          setup.pendingMssBar < setup.targetBar &&
+          setup.pendingMssTime < setup.targetTime;
+}
+
+bool SblPromotePendingMss(SblSetup &setup)
+{
+   if(!SblPendingMssPrecedesTarget(setup))
+      return false;
+   const int pendingBar = setup.pendingMssBar;
+   const long pendingTime = setup.pendingMssTime;
+   SblClearPendingMss(setup);
+   setup.mssBar = pendingBar;
+   setup.mssTime = pendingTime;
+   return true;
+}
+
 bool SblTryTrigger(SblSetup &setup, const SblBar &bar,
                    bool inWindow, const SblConfig &config,
                    SblDecision &decision)
@@ -927,7 +1348,12 @@ bool SblTryTrigger(SblSetup &setup, const SblBar &bar,
       return false;
    if(config.requireWindow && !inWindow)
       return false;
-   if(!SblDirectionalRejection(setup.direction, bar))
+   // Une FVG de contexte reste obligatoire, quel que soit le mecanisme de
+   // retracement retenu (CE, OTE ou EMA).
+   if(!setup.hasContextFvg)
+      return false;
+   if(config.requireDirectionalRejection &&
+      !SblDirectionalRejection(setup.direction,bar))
       return false;
 
    int trigger = SBL_TRIGGER_NONE;
@@ -947,9 +1373,16 @@ bool SblTryTrigger(SblSetup &setup, const SblBar &bar,
       SblRangesIntersect(bar.low, bar.high, oteZoneLow, oteZoneHigh))
       trigger = SBL_TRIGGER_OTE;
 
-   if(trigger == SBL_TRIGGER_NONE && config.useEmaTrigger &&
-      SblEmaTrigger(setup.direction, bar, setup.fib0, setup.fib1))
-      trigger = SBL_TRIGGER_EMA;
+   if(trigger == SBL_TRIGGER_NONE && config.useEmaTrigger)
+   {
+      bool emaTriggered = config.requireDirectionalRejection
+                          ? SblEmaTrigger(setup.direction,bar,
+                                         setup.fib0,setup.fib1)
+                          : SblEmaTouched(setup.direction,bar,
+                                         setup.fib0,setup.fib1);
+      if(emaTriggered)
+         trigger = SBL_TRIGGER_EMA;
+   }
 
    if(trigger == SBL_TRIGGER_NONE)
       return false;
@@ -990,22 +1423,17 @@ bool SblAdvanceSetup(SblSetup &setup, const SblBar &bar,
    // Une cible externe est un fait de marche : elle doit etre exposee meme si
    // cette meme bougie fait perdre le biais, expire le setup ou sort de plage.
    bool targetBeforePivot =
+      !setup.targetTaken &&
       setup.phase == SBL_PHASE_WAIT_INTERNAL_PIVOT &&
       SblExternalTargetSweptBeforePivot(setup,bar);
    bool targetAfterPivot =
-      setup.phase == SBL_PHASE_WAIT_TARGET &&
+      !setup.targetTaken && setup.phase == SBL_PHASE_WAIT_TARGET &&
       SblExternalTargetSwept(setup,bar);
    if(targetBeforePivot || targetAfterPivot)
+      SblRecordTargetOnce(setup,bar,decision);
+   if(targetBeforePivot && !config.allowTargetBeforeInternalPivot)
    {
-      setup.targetTaken = true;
-      setup.targetBar = bar.index;
-      setup.targetTime = bar.time;
-      setup.breakBar = bar.index;
-      setup.breakTime = bar.time;
-      SblExposeTargetConsumption(setup,decision);
-   }
-   if(targetBeforePivot)
-   {
+      SblClearPendingMss(setup);
       setup.phase = SBL_PHASE_INVALID;
       return false;
    }
@@ -1018,6 +1446,7 @@ bool SblAdvanceSetup(SblSetup &setup, const SblBar &bar,
       SblSetupExpired(setup, bar, config) ||
       SblOriginInvalidated(setup, bar))
    {
+      SblClearPendingMss(setup);
       setup.phase = SBL_PHASE_INVALID;
       return false;
    }
@@ -1030,12 +1459,11 @@ bool SblAdvanceSetup(SblSetup &setup, const SblBar &bar,
       return false;
    }
 
-   if((setup.phase == SBL_PHASE_WAIT_INTERNAL_PIVOT ||
-       setup.phase == SBL_PHASE_WAIT_TARGET ||
-       setup.phase == SBL_PHASE_WAIT_MSS ||
-       setup.phase == SBL_PHASE_WAIT_CONFIRMATION) &&
-      SblCandidateFvgInvalidated(setup,bar))
-      SblClearCandidateFvg(setup);
+   if(setup.phase == SBL_PHASE_WAIT_INTERNAL_PIVOT ||
+      setup.phase == SBL_PHASE_WAIT_TARGET ||
+      setup.phase == SBL_PHASE_WAIT_MSS ||
+      setup.phase == SBL_PHASE_WAIT_CONFIRMATION)
+      SblInvalidateCandidateFvgs(setup,bar,config.maxFvgCandidates);
 
    if(setup.phase == SBL_PHASE_WAIT_INTERNAL_PIVOT ||
       setup.phase == SBL_PHASE_WAIT_TARGET ||
@@ -1048,15 +1476,19 @@ bool SblAdvanceSetup(SblSetup &setup, const SblBar &bar,
          setup.legExtreme = SblMin(setup.legExtreme,bar.low);
 
       if(newFvg.formedBar <= bar.index && newFvg.formedTime <= bar.time)
-         SblCacheCandidateFvg(setup,newFvg);
+         SblCacheCandidateFvg(setup,newFvg,config.maxFvgCandidates);
    }
 
    if(setup.phase == SBL_PHASE_WAIT_INTERNAL_PIVOT)
    {
       if(!SblStoreInternalPivot(setup,newPivot,bar))
          return false;
-      // Le pivot n'est connu qu'a la cloture de sa deuxieme bougie droite :
-      // cette meme bougie ne peut pas retroactivement prendre le target.
+
+      // En mode flexible, une cible deja memorisee permet d'attendre le MSS
+      // des la confirmation du pivot. Elle ne rend toutefois jamais causal un
+      // croisement observe sur la bougie meme qui confirme ce pivot.
+      if(setup.targetTaken)
+         setup.phase = SBL_PHASE_WAIT_MSS;
       if(bar.index <= setup.internalPivotConfirmedBar ||
          bar.time <= setup.internalPivotConfirmedTime)
          return false;
@@ -1065,20 +1497,30 @@ bool SblAdvanceSetup(SblSetup &setup, const SblBar &bar,
    if(setup.phase == SBL_PHASE_WAIT_TARGET)
    {
       bool targetSwept = targetAfterPivot;
-      if(!targetSwept && SblInternalMssCrossed(setup,bar))
+      if(!targetSwept)
       {
-         // Le MSS n'est causal que s'il suit la prise de cible externe.
+         if(!SblInternalMssCrossed(setup,bar))
+            return false;
+         if(config.allowMssBeforeTarget)
+         {
+            SblStorePendingMss(setup,bar);
+            return false;
+         }
+
+         // Mode strict historique : tout MSS precedant la cible invalide.
+         SblClearPendingMss(setup);
          setup.phase = SBL_PHASE_INVALID;
          return false;
       }
-      if(!targetSwept)
-         return false;
-      setup.targetTaken = true;
-      setup.targetBar = bar.index;
-      setup.targetTime = bar.time;
-      setup.breakBar = bar.index;
-      setup.breakTime = bar.time;
-      setup.phase = SBL_PHASE_WAIT_MSS;
+      if(config.allowMssBeforeTarget && SblPromotePendingMss(setup))
+         setup.phase = SBL_PHASE_WAIT_CONFIRMATION;
+      else
+      {
+         // Un pending incomplet ou non causal ne doit jamais etre promu. Le
+         // croisement de la bougie cible reste evaluable juste en dessous.
+         SblClearPendingMss(setup);
+         setup.phase = SBL_PHASE_WAIT_MSS;
+      }
    }
 
    // Target et MSS peuvent etre confirmes par la meme bougie, a condition
@@ -1097,7 +1539,8 @@ bool SblAdvanceSetup(SblSetup &setup, const SblBar &bar,
       double displacement = SblAbs(setup.legExtreme - setup.fib0);
       if(displacement < config.minDisplacement)
          return false;
-      if(!setup.hasContextFvg && !SblPromoteCandidateFvg(setup))
+      if(!setup.hasContextFvg &&
+         !SblPromoteCandidateFvg(setup,config.maxFvgCandidates))
          return false;
       setup.fib1 = setup.legExtreme;
       setup.equilibrium = (setup.fib0 + setup.fib1) * 0.5;

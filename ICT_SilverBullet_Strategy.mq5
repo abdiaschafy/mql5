@@ -1,7 +1,8 @@
 //+------------------------------------------------------------------+
 //|                                    ICT_SilverBullet_Strategy.mq5 |
 //|   Continuation ICT : stack D1/H1/M5/M1 strict, purge reintegree,|
-//|   pivot interne 2/2, cible, MSS, FVG CE, puis retracement.       |
+//|   pivots internes/externes 1/1 ou 2/2, cible, MSS, FVG CE,      |
+//|   puis retracement.                                             |
 //|                                                                  |
 //|   LONG  : purge low -> pivot high interne -> cible high -> MSS  |
 //|           interne -> FVG en discount -> retracement -> achat.   |
@@ -52,14 +53,21 @@ input group "== 2. Modeles d'entree =="
 input bool   InpUseOTE       = false;   // OTE comme declencheur (62-79 %)
 input bool   InpUseFVG       = true;    // FVG comme declencheur (contexte FVG toujours requis)
 input bool   InpUseEmaRetest = true;    // Retest EMA comme declencheur
+input bool   InpRequireDirectionalRejection = true; // Rejet directionnel au retracement
 input double InpOteLow       = 0.62;    // OTE bas (62 %)
 input double InpOteHigh      = 0.79;    // OTE haut (79 %)
 input double InpOteSweet     = 0.705;   // Compatibilite preset (zone complete utilisee)
 input int    InpMinDispTicks = 20;      // Deplacement min (ticks)
 input int    InpMinFvgTicks  = 1;       // Taille min FVG (ticks)
+input int    InpMaxFvgCandidates = 1;   // Candidats FVG conserves (1 a 4)
+input int    InpEntryEqToleranceTicks = 0; // Tolerance execution au-dela de EQ
 input int    InpSetupExpiry  = 30;      // Expiration depuis la purge (barres)
 input bool   InpRequireMSS   = true;    // Compatibilite : MSS toujours exige
 input int    InpMssLookback  = 15;      // Compatibilite preset
+input int    InpInternalPivotStrength = 1; // Pivot interne : 1/1 ou 2/2
+input int    InpExternalPivotStrength = 2; // Pivot de reference : 1/1 ou 2/2
+input bool   InpAllowMssBeforeTarget = false; // MSS post-purge memorisable avant la cible
+input bool   InpAllowTargetBeforeInternalPivot = false; // Cible memorisable avant pivot interne
 
 input group "== 3. Stop / Take profit =="
 input int    InpSlBufferTicks = 4;      // Buffer SL au-dela de Fib 0
@@ -153,8 +161,66 @@ struct StrategySetup
    string   triggerName;
 };
 
+// Telemetrie purement observationnelle du funnel de decision. Elle ne porte
+// aucun etat utilise par le Core ni par l'execution broker.
+struct StrategyFunnelTelemetry
+{
+   long setupsCreated;
+   long internalPivots;
+   long earlyTargets;
+   long targets;
+   long pendingMss;
+   long mss;
+   long confirmationFvg;
+   long triggers;
+   long signals;
+   long retracementBars;
+   long retracementRejectionOk;
+   long retracementCloseValue;
+   long retracementFvgTouch;
+   long retracementOteTouch;
+   long retracementEmaTouch;
+   long retracementZoneTouch;
+   long retracementZoneTouchCloseValue;
+   long retracementContextInvalid;
+   long retracementContextInvalidZoneClose;
+   long retracementWindowInvalid;
+   long retracementOriginInvalid;
+   long retracementBiasInvalid;
+   long confirmationBars;
+   long confirmationDisplacementOk;
+   long confirmationCandidateAvailable;
+   long confirmationCandidateCeValue;
+   long confirmationReady;
+   long entryAttempts;
+   long entryRejectQuote;
+   long entryRejectValueArea;
+   double entryRejectValueAreaMaxGapTicks;
+   long entryRejectRisk;
+   long entryRejectStopLevel;
+   long entryRejectLots;
+   long entryRejectWindow;
+   long entryBrokerReject;
+   long entryPending;
+   long entryConfirmed;
+   long entryInvalidExecution;
+   long entryInvalidRiskCalculation;
+   long entryInvalidRiskBudget;
+   long entryInvalidRiskDistance;
+   long entryInvalidFillArea;
+   long entryInvalidProtection;
+   long invalidWaitInternal;
+   long invalidWaitTarget;
+   long invalidWaitMss;
+   long invalidWaitConfirmation;
+   long invalidWaitRetracement;
+   long invalidTriggered;
+   long invalidOther;
+};
+
 StrategySetup g_setups[];
 SblConsumedRegistry g_consumed;
+StrategyFunnelTelemetry g_funnel;
 
 //====================== INDICATEURS ======================
 int hExecF=INVALID_HANDLE, hExecS=INVALID_HANDLE;
@@ -185,6 +251,208 @@ const long SB_STATE_SIGNATURE_V2=0x53424C32;
 const long SB_STATE_SIGNATURE_V3=0x53424C33;
 
 //====================== INITIALISATION ======================
+bool FunnelTelemetryEnabled()
+{
+   return InpVerbose || (bool)MQLInfoInteger(MQL_TESTER);
+}
+
+void ResetFunnelTelemetry()
+{
+   ZeroMemory(g_funnel);
+}
+
+void CountFunnelInvalidation(int phase)
+{
+   if(!FunnelTelemetryEnabled()) return;
+   if(phase==SBL_PHASE_WAIT_INTERNAL_PIVOT)
+      g_funnel.invalidWaitInternal++;
+   else if(phase==SBL_PHASE_WAIT_TARGET)
+      g_funnel.invalidWaitTarget++;
+   else if(phase==SBL_PHASE_WAIT_MSS)
+      g_funnel.invalidWaitMss++;
+   else if(phase==SBL_PHASE_WAIT_CONFIRMATION)
+      g_funnel.invalidWaitConfirmation++;
+   else if(phase==SBL_PHASE_WAIT_RETRACEMENT)
+      g_funnel.invalidWaitRetracement++;
+   else if(phase==SBL_PHASE_TRIGGERED)
+      g_funnel.invalidTriggered++;
+   else
+      g_funnel.invalidOther++;
+}
+
+void ObserveFunnelAdvance(int phaseBefore,
+                          bool hadInternalPivot,
+                          bool hadTarget,
+                          bool hadPendingMss,
+                          int mssBarBefore,
+                          int confirmationBarBefore,
+                          int triggerBefore,
+                          const SblSetup &setup,
+                          const SblDecision &decision)
+{
+   if(!FunnelTelemetryEnabled()) return;
+   if(!hadInternalPivot && setup.hasInternalPivot)
+      g_funnel.internalPivots++;
+   if(phaseBefore==SBL_PHASE_WAIT_INTERNAL_PIVOT &&
+      !hadTarget && setup.targetTaken && setup.phase!=SBL_PHASE_INVALID)
+      g_funnel.earlyTargets++;
+   if(!hadTarget && setup.targetTaken)
+      g_funnel.targets++;
+   if(!hadPendingMss && setup.hasPendingMss)
+      g_funnel.pendingMss++;
+   if(mssBarBefore<0 && setup.mssBar>=0)
+      g_funnel.mss++;
+   if(confirmationBarBefore<0 && setup.confirmationBar>=0 &&
+      setup.hasContextFvg)
+      g_funnel.confirmationFvg++;
+   if(triggerBefore==SBL_TRIGGER_NONE && setup.trigger!=SBL_TRIGGER_NONE)
+      g_funnel.triggers++;
+   if(decision.signal)
+      g_funnel.signals++;
+   if(setup.phase==SBL_PHASE_INVALID)
+      CountFunnelInvalidation(phaseBefore);
+}
+
+void ObserveRetracementFunnel(const SblSetup &setup,
+                              const SblBar &bar,
+                              int alignedBias,
+                              bool inWindow,
+                              const SblConfig &config)
+{
+   if(!FunnelTelemetryEnabled() ||
+      setup.phase!=SBL_PHASE_WAIT_RETRACEMENT)
+      return;
+
+   bool rejectionOk=SblDirectionalRejection(setup.direction,bar);
+   bool closeValue=SblPriceInValueArea(setup.direction,bar.close,
+                                       setup.fib0,setup.fib1);
+   bool fvgTouch=false;
+   if(setup.hasContextFvg)
+   {
+      double ce=SblFvgConsequentEncroachment(setup.fvgLow,setup.fvgHigh);
+      fvgTouch=bar.low<=ce && bar.high>=ce;
+   }
+
+   double oteLow=0.0,oteHigh=0.0;
+   SblOteBounds(setup.direction,setup.fib0,setup.fib1,
+                config.oteLow,config.oteHigh,oteLow,oteHigh);
+   bool oteTouch=SblRangesIntersect(bar.low,bar.high,oteLow,oteHigh);
+   bool emaTouch=SblEmaTouched(setup.direction,bar,
+                               setup.fib0,setup.fib1);
+   bool zoneTouch=(config.useFvgTrigger && fvgTouch) ||
+                  (config.useOteTrigger && oteTouch) ||
+                  (config.useEmaTrigger && emaTouch);
+   bool windowInvalid=!inWindow || !SblValidEntryWindowKey(bar.windowKey) ||
+                      bar.windowKey!=setup.windowKey;
+   bool originInvalid=SblOriginInvalidated(setup,bar);
+   bool biasInvalid=alignedBias!=setup.direction;
+   bool expired=SblSetupExpired(setup,bar,config);
+   // Le Core evalue la FVG de contexte seulement apres ces gardes generales.
+   bool contextInvalid=!windowInvalid && !originInvalid && !biasInvalid &&
+                       !expired && SblContextFvgInvalidated(setup,bar);
+
+   g_funnel.retracementBars++;
+   if(rejectionOk) g_funnel.retracementRejectionOk++;
+   if(closeValue) g_funnel.retracementCloseValue++;
+   if(fvgTouch) g_funnel.retracementFvgTouch++;
+   if(oteTouch) g_funnel.retracementOteTouch++;
+   if(emaTouch) g_funnel.retracementEmaTouch++;
+   if(zoneTouch) g_funnel.retracementZoneTouch++;
+   if(zoneTouch && closeValue)
+      g_funnel.retracementZoneTouchCloseValue++;
+   if(contextInvalid) g_funnel.retracementContextInvalid++;
+   if(contextInvalid && zoneTouch && closeValue)
+      g_funnel.retracementContextInvalidZoneClose++;
+   if(windowInvalid) g_funnel.retracementWindowInvalid++;
+   if(originInvalid) g_funnel.retracementOriginInvalid++;
+   if(biasInvalid) g_funnel.retracementBiasInvalid++;
+}
+
+void ObserveConfirmationFunnel(int phaseBefore,
+                               int mssBarBefore,
+                               const SblSetup &setup,
+                               const SblConfig &config)
+{
+   if(!FunnelTelemetryEnabled()) return;
+   bool reachedConfirmation=phaseBefore==SBL_PHASE_WAIT_CONFIRMATION ||
+                            (mssBarBefore<0 && setup.mssBar>=0);
+   if(!reachedConfirmation) return;
+
+   g_funnel.confirmationBars++;
+   // Une invalidation chronologique precede l'evaluation de confirmation ;
+   // elle est deja ventilee par phase et ne doit pas imiter un blocage FVG.
+   if(setup.phase==SBL_PHASE_INVALID) return;
+
+   bool displacementOk=
+      SblAbs(setup.legExtreme-setup.fib0)>=config.minDisplacement;
+   bool candidateAvailable=setup.hasContextFvg ||
+                           setup.candidateFvgCount>0 ||
+                           setup.hasCandidateFvg;
+   bool candidateCeValue=setup.hasContextFvg ||
+                         SblHasPromotableCandidateFvg(setup);
+
+   if(displacementOk) g_funnel.confirmationDisplacementOk++;
+   if(candidateAvailable) g_funnel.confirmationCandidateAvailable++;
+   if(candidateCeValue) g_funnel.confirmationCandidateCeValue++;
+   if(displacementOk && candidateCeValue)
+      g_funnel.confirmationReady++;
+}
+
+int BoundEntryEqToleranceTicks(int requested)
+{
+   if(requested<0) return 0;
+   if(requested>50) return 50;
+   return requested;
+}
+
+bool ExecutableEntryBounds(const SblSetup &setup,double &lower,double &upper)
+{
+   double tickSize=TickSize();
+   if(tickSize<=0.0) return false;
+   double tolerance=BoundEntryEqToleranceTicks(
+                       InpEntryEqToleranceTicks)*tickSize;
+   double equilibrium=(setup.fib0+setup.fib1)*0.5;
+   if(setup.direction==SBL_LONG && setup.fib1>setup.fib0)
+   {
+      lower=setup.fib0;
+      upper=equilibrium+tolerance;
+      return true;
+   }
+   if(setup.direction==SBL_SHORT && setup.fib0>setup.fib1)
+   {
+      lower=equilibrium-tolerance;
+      upper=setup.fib0;
+      return true;
+   }
+   return false;
+}
+
+bool ExecutableEntryInValueArea(const SblSetup &setup,double price)
+{
+   double lower=0.0,upper=0.0;
+   return price>0.0 && ExecutableEntryBounds(setup,lower,upper) &&
+          price>=lower && price<=upper;
+}
+
+double ExecutableEntryValueAreaGapTicks(const SblSetup &setup,double price)
+{
+   double lower=0.0,upper=0.0;
+   double tickSize=TickSize();
+   if(price<=0.0 || tickSize<=0.0 ||
+      !ExecutableEntryBounds(setup,lower,upper))
+      return 0.0;
+   double gap=price<lower ? lower-price : price>upper ? price-upper : 0.0;
+   return gap/tickSize;
+}
+
+void ObserveEntryValueAreaGap(const SblSetup &setup,double entry)
+{
+   if(!FunnelTelemetryEnabled() || entry<=0.0) return;
+   double gapTicks=ExecutableEntryValueAreaGapTicks(setup,entry);
+   if(gapTicks>g_funnel.entryRejectValueAreaMaxGapTicks)
+      g_funnel.entryRejectValueAreaMaxGapTicks=gapTicks;
+}
+
 bool InputsAreValid()
 {
    if(InpHtfTF!=PERIOD_H1 || InpConf1TF!=PERIOD_M5 ||
@@ -202,6 +470,14 @@ bool InputsAreValid()
    if(InpOteSweet<InpOteLow || InpOteSweet>InpOteHigh)
       return false;
    if(InpMinDispTicks<0 || InpMinFvgTicks<=0 || InpSetupExpiry<=0)
+      return false;
+   if(InpMaxFvgCandidates<1 || InpMaxFvgCandidates>4)
+      return false;
+   if(InpEntryEqToleranceTicks<0 || InpEntryEqToleranceTicks>50)
+      return false;
+   if(InpInternalPivotStrength!=1 && InpInternalPivotStrength!=2)
+      return false;
+   if(InpExternalPivotStrength!=1 && InpExternalPivotStrength!=2)
       return false;
    if(InpSlBufferTicks<0 || InpTp1R<=0.0 || InpFinalR<=InpTp1R ||
       InpTp1Percent<0.0 || InpTp1Percent>=100.0 || InpTrailR<=0.0)
@@ -440,6 +716,7 @@ int UntrackedMagicSymbolOrderCount()
 
 int OnInit()
 {
+   ResetFunnelTelemetry();
    if(!InputsAreValid())
    {
       Print("ICT SB : parametres invalides");
@@ -788,13 +1065,17 @@ void BuildLogicConfig(SblConfig &config)
 {
    config.minDisplacement=InpMinDispTicks*TickSize();
    config.minFvgSize=InpMinFvgTicks*TickSize();
+   config.maxFvgCandidates=InpMaxFvgCandidates;
    config.oteLow=InpOteLow;
    config.oteHigh=InpOteHigh;
    config.expiryBars=InpSetupExpiry;
    config.requireWindow=true;
+   config.requireDirectionalRejection=InpRequireDirectionalRejection;
+   config.allowTargetBeforeInternalPivot=InpAllowTargetBeforeInternalPivot;
    config.useFvgTrigger=InpUseFVG;
    config.useOteTrigger=InpUseOTE;
    config.useEmaTrigger=InpUseEmaRetest;
+   config.allowMssBeforeTarget=InpAllowMssBeforeTarget;
 }
 
 //====================== SETUPS ======================
@@ -953,6 +1234,8 @@ bool CreateSetupAfterPurge(int direction,const SblBar &bar)
    int count=ArraySize(g_setups);
    ArrayResize(g_setups,count+1);
    g_setups[count]=candidate;
+   if(FunnelTelemetryEnabled())
+      g_funnel.setupsCreated++;
 
    if(InpVerbose)
       PrintFormat("ICT SB : setup #%d %s, purge=%.5f refLow=%.5f refHigh=%.5f",
@@ -1254,30 +1537,55 @@ bool ModifyPositionChecked(int setupIndex,double stop,double takeProfit,
 
 bool EnterSetup(int index,const SblDecision &decision)
 {
+   bool observeEntry=FunnelTelemetryEnabled();
+   if(observeEntry) g_funnel.entryAttempts++;
    StrategySetup setup=g_setups[index];
    MqlTick quote;
-   if(!SymbolInfoTick(_Symbol,quote)) return false;
+   if(!SymbolInfoTick(_Symbol,quote))
+   {
+      if(observeEntry) g_funnel.entryRejectQuote++;
+      return false;
+   }
 
    double entry=setup.logic.direction==SBL_LONG ? quote.ask : quote.bid;
-   if(entry<=0.0 ||
-      !SblPriceInValueArea(setup.logic.direction,entry,
-                           setup.logic.fib0,setup.logic.fib1))
+   if(entry<=0.0)
+   {
+      if(observeEntry) g_funnel.entryRejectQuote++;
       return false;
+   }
+   if(!ExecutableEntryInValueArea(setup.logic,entry))
+   {
+      if(observeEntry)
+      {
+         g_funnel.entryRejectValueArea++;
+         ObserveEntryValueAreaGap(setup.logic,entry);
+      }
+      return false;
+   }
 
    double stop=setup.logic.direction==SBL_LONG
                ? setup.logic.fib0-InpSlBufferTicks*TickSize()
                : setup.logic.fib0+InpSlBufferTicks*TickSize();
    stop=NormalizePrice(stop);
    double risk=setup.logic.direction==SBL_LONG ? entry-stop : stop-entry;
-   if(risk<TickSize()) return false;
+   if(risk<TickSize())
+   {
+      if(observeEntry) g_funnel.entryRejectRisk++;
+      return false;
+   }
 
    long stopLevelPoints=SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL);
-   if(stopLevelPoints>0 && risk<stopLevelPoints*_Point) return false;
+   if(stopLevelPoints>0 && risk<stopLevelPoints*_Point)
+   {
+      if(observeEntry) g_funnel.entryRejectStopLevel++;
+      return false;
+   }
 
    double riskBudget=EquityBase()*EffectiveRiskPct()/100.0;
    double lots=RiskBasedLots(setup.logic.direction,entry,stop);
    if(lots<=0.0)
    {
+      if(observeEntry) g_funnel.entryRejectLots++;
       if(InpVerbose)
          PrintFormat("ICT SB : setup #%d refuse, lot risque sous le minimum",
                      setup.logic.id);
@@ -1298,7 +1606,10 @@ bool EnterSetup(int index,const SblDecision &decision)
                             ? EntryWindowKey(executableTime) : 0;
    if(executableWindowKey<=0 ||
       executableWindowKey!=setup.logic.windowKey)
+   {
+      if(observeEntry) g_funnel.entryRejectWindow++;
       return false;
+   }
 
    setup.entryRequestTimeMsc=quote.time_msc>0
                              ? quote.time_msc
@@ -1347,6 +1658,7 @@ bool EnterSetup(int index,const SblDecision &decision)
                       (!requestCompleted && executionFound);
    if(mustReconcile)
    {
+      if(observeEntry) g_funnel.entryPending++;
       // PLACED/timeout/DONE_PARTIAL : conserver une sentinelle jusqu'a ce que le
       // deal, la position ou un rejet historique soit observable. Elle bloque
       // la capacite et fermera toute execution tardive au lieu de la laisser
@@ -1364,6 +1676,7 @@ bool EnterSetup(int index,const SblDecision &decision)
    }
    if(!requestCompleted)
    {
+      if(observeEntry) g_funnel.entryBrokerReject++;
       if(InpVerbose)
          PrintFormat("ICT SB : echec ouverture setup #%d ret=%u",
                      setup.logic.id,openRetcode);
@@ -1382,6 +1695,7 @@ bool EnterSetup(int index,const SblDecision &decision)
    // Un ordre execute sans fill ou volume reconciliable ne peut pas etre gere.
    if(fill<=0.0 || actualVolume<=0.0)
    {
+      if(observeEntry) g_funnel.entryPending++;
       setup.entered=true;
       setup.entryPending=true;
       setup.entryPendingSince=TimeCurrent();
@@ -1392,6 +1706,8 @@ bool EnterSetup(int index,const SblDecision &decision)
                   setup.logic.id);
       return true;
    }
+
+   if(observeEntry) g_funnel.entryConfirmed++;
 
    setup.entered=true; // L'ordre a ete execute : ne jamais permettre un doublon.
    setup.entryPending=false;
@@ -1425,12 +1741,14 @@ bool EnterSetup(int index,const SblDecision &decision)
    bool riskCalculated=OrderCalcProfit(orderType,_Symbol,actualVolume,
                                        fill,stop,actualStopPnl);
    double actualRisk=MathAbs(actualStopPnl);
-   double riskTolerance=MathMax(0.01,riskBudget*1e-6);
+   // Absorber uniquement le bruit d'arrondi monetaire post-fill : plancher
+   // de 5 cents, puis 0,01 % du budget lorsque ce montant est superieur.
+   double riskTolerance=MathMax(0.05,riskBudget*1e-4);
    bool riskValid=riskCalculated &&
                   actualRisk<=riskBudget+riskTolerance;
-   bool fillValid=setup.riskDistance>=TickSize() && riskValid &&
-      SblPriceInValueArea(setup.logic.direction,fill,
-                          setup.logic.fib0,setup.logic.fib1);
+   bool riskDistanceValid=setup.riskDistance>=TickSize();
+   bool fillValidArea=ExecutableEntryInValueArea(setup.logic,fill);
+   bool fillValid=riskDistanceValid && riskValid && fillValidArea;
    bool protectionValid=false;
    if(fillValid && setup.positionTicket>0)
       protectionValid=ModifyPositionChecked(index,setup.sl,setup.tpFinal,
@@ -1438,7 +1756,24 @@ bool EnterSetup(int index,const SblDecision &decision)
    bool protectionPending=g_setups[index].modifyPending;
    if(!fillValid || (!protectionValid && !protectionPending))
    {
+      if(observeEntry)
+      {
+         g_funnel.entryInvalidExecution++;
+         if(!riskCalculated) g_funnel.entryInvalidRiskCalculation++;
+         if(riskCalculated && !riskValid)
+            g_funnel.entryInvalidRiskBudget++;
+         if(!riskDistanceValid) g_funnel.entryInvalidRiskDistance++;
+         if(!fillValidArea) g_funnel.entryInvalidFillArea++;
+         if(fillValid && !protectionValid && !protectionPending)
+            g_funnel.entryInvalidProtection++;
+      }
       g_setups[index].forceClose=true;
+      PrintFormat("ICT_SB_EXEC_INVALID,setup=%d,riskCalculated=%d,riskValid=%d,actualRisk=%.8f,riskBudget=%.8f,riskDistance=%.10f,riskDistanceValid=%d,fillValidArea=%d,protectionValid=%d,protectionPending=%d,fill=%.10f,stop=%.10f,volume=%.8f",
+                  setup.logic.id,(int)riskCalculated,(int)riskValid,
+                  actualRisk,riskBudget,setup.riskDistance,
+                  (int)riskDistanceValid,(int)fillValidArea,
+                  (int)protectionValid,(int)protectionPending,
+                  fill,stop,actualVolume);
       PrintFormat("ICT SB : setup #%d execution invalide, fermeture de securite",
                   setup.logic.id);
       return true;
@@ -1926,12 +2261,63 @@ bool ProcessClosedBar(int closedShift,datetime decisionTime,int nextBarIndex,
    int alignedBias=0;
    if(!ReadAlignedBias(decisionTime,alignedBias)) return false;
 
-   SblPivot highPivot,lowPivot;
-   SblDetectInternalPivot(SBL_LONG,twoBefore,oneBefore,candidate,
-                          oneAfter,newest,highPivot);
-   SblDetectInternalPivot(SBL_SHORT,twoBefore,oneBefore,candidate,
-                          oneAfter,newest,lowPivot);
-   SblRejectAmbiguousDualPivot(highPivot,lowPivot);
+   // Les references externes possedent leur propre force et leur propre
+   // buffer causal ; elles ne dependent jamais du pivot interne des setups.
+   SblBar referenceTwoBefore,referenceOneBefore,referenceCandidate,
+          referenceOneAfter,referenceTwoAfter;
+   referenceTwoBefore=twoBefore;
+   referenceOneBefore=oneBefore;
+   referenceCandidate=candidate;
+   referenceOneAfter=oneAfter;
+   referenceTwoAfter=newest;
+   if(InpExternalPivotStrength==1)
+   {
+      referenceTwoBefore=oneBefore; // Ignore par le Core en mode 1/1.
+      referenceOneBefore=candidate;
+      referenceCandidate=oneAfter;
+      referenceOneAfter=newest;
+      referenceTwoAfter=newest;     // Ignore par le Core en mode 1/1.
+   }
+
+   SblPivot referenceHighPivot,referenceLowPivot;
+   SblDetectInternalPivot(SBL_LONG,InpExternalPivotStrength,
+                          referenceTwoBefore,referenceOneBefore,
+                          referenceCandidate,referenceOneAfter,
+                          referenceTwoAfter,referenceHighPivot);
+   SblDetectInternalPivot(SBL_SHORT,InpExternalPivotStrength,
+                          referenceTwoBefore,referenceOneBefore,
+                          referenceCandidate,referenceOneAfter,
+                          referenceTwoAfter,referenceLowPivot);
+   SblRejectAmbiguousDualPivot(referenceHighPivot,referenceLowPivot);
+
+   // Le pivot interne 1/1 est connaissable sur newest : son candidat est la
+   // bougie precedente. Le 2/2 conserve le buffer historique de cinq barres.
+   SblBar internalTwoBefore,internalOneBefore,internalCandidate,
+          internalOneAfter,internalTwoAfter;
+   internalTwoBefore=twoBefore;
+   internalOneBefore=oneBefore;
+   internalCandidate=candidate;
+   internalOneAfter=oneAfter;
+   internalTwoAfter=newest;
+   if(InpInternalPivotStrength==1)
+   {
+      internalTwoBefore=oneBefore; // Ignore par le Core en mode 1/1.
+      internalOneBefore=candidate;
+      internalCandidate=oneAfter;
+      internalOneAfter=newest;
+      internalTwoAfter=newest;     // Ignore par le Core en mode 1/1.
+   }
+
+   SblPivot internalHighPivot,internalLowPivot;
+   SblDetectInternalPivot(SBL_LONG,InpInternalPivotStrength,
+                          internalTwoBefore,internalOneBefore,
+                          internalCandidate,internalOneAfter,
+                          internalTwoAfter,internalHighPivot);
+   SblDetectInternalPivot(SBL_SHORT,InpInternalPivotStrength,
+                          internalTwoBefore,internalOneBefore,
+                          internalCandidate,internalOneAfter,
+                          internalTwoAfter,internalLowPivot);
+   SblRejectAmbiguousDualPivot(internalHighPivot,internalLowPivot);
 
    SblConfig config;
    BuildLogicConfig(config);
@@ -1950,6 +2336,7 @@ bool ProcessClosedBar(int closedShift,datetime decisionTime,int nextBarIndex,
       {
          if(!inWindow || newest.windowKey!=g_setups[i].logic.windowKey)
          {
+            CountFunnelInvalidation(SBL_PHASE_TRIGGERED);
             g_setups[i].logic.phase=SBL_PHASE_INVALID;
             RemoveSetup(i);
             continue;
@@ -1963,17 +2350,34 @@ bool ProcessClosedBar(int closedShift,datetime decisionTime,int nextBarIndex,
 
       SblPivot setupPivot;
       if(g_setups[i].logic.direction==SBL_LONG)
-         setupPivot=highPivot;
+         setupPivot=internalHighPivot;
       else
-         setupPivot=lowPivot;
+         setupPivot=internalLowPivot;
 
+      int phaseBeforeAdvance=g_setups[i].logic.phase;
+      bool hadInternalPivot=g_setups[i].logic.hasInternalPivot;
+      bool hadTarget=g_setups[i].logic.targetTaken;
+      bool hadPendingMss=g_setups[i].logic.hasPendingMss;
+      int mssBarBefore=g_setups[i].logic.mssBar;
+      int confirmationBarBefore=g_setups[i].logic.confirmationBar;
+      int triggerBefore=g_setups[i].logic.trigger;
       SblDecision decision;
+      ObserveRetracementFunnel(g_setups[i].logic,newest,alignedBias,
+                               inWindow,config);
       bool signaled=SblAdvanceSetup(g_setups[i].logic,newest,
                                     alignedBias,setupPivot,newFvg,inWindow,
                                     config,decision);
+      ObserveConfirmationFunnel(phaseBeforeAdvance,mssBarBefore,
+                                g_setups[i].logic,config);
+      ObserveFunnelAdvance(phaseBeforeAdvance,hadInternalPivot,hadTarget,
+                           hadPendingMss,
+                           mssBarBefore,confirmationBarBefore,triggerBefore,
+                           g_setups[i].logic,decision);
       if(decision.consumeTarget && decision.targetKey>0)
          ConsumeLiquidity(decision.direction,decision.targetKey);
 
+      if(g_dayLocked && g_setups[i].logic.phase!=SBL_PHASE_INVALID)
+         CountFunnelInvalidation(g_setups[i].logic.phase);
       if(g_dayLocked)
          g_setups[i].logic.phase=SBL_PHASE_INVALID;
 
@@ -1989,6 +2393,7 @@ bool ProcessClosedBar(int closedShift,datetime decisionTime,int nextBarIndex,
          // elle reconstruit l'historique, mais ne doit jamais trader au prix live.
          if(!allowExecution)
          {
+            CountFunnelInvalidation(SBL_PHASE_TRIGGERED);
             RemoveSetup(i);
             continue;
          }
@@ -2001,6 +2406,7 @@ bool ProcessClosedBar(int closedShift,datetime decisionTime,int nextBarIndex,
          // avoir ete executee tardivement malgre le retcode local.
          if(g_setups[i].logic.phase==SBL_PHASE_INVALID)
          {
+            CountFunnelInvalidation(SBL_PHASE_TRIGGERED);
             RemoveSetup(i);
             continue;
          }
@@ -2072,10 +2478,9 @@ bool ProcessClosedBar(int closedShift,datetime decisionTime,int nextBarIndex,
    if(rawLow) ConsumeLiquidity(SBL_LONG,lowKey);
    if(rawHigh) ConsumeLiquidity(SBL_SHORT,highKey);
 
-   // Un pivot confirme a cette cloture n'etait pas encore connaissable
-   // pendant la bougie : il ne devient une reference externe qu'ensuite.
-   // Le meme evenement a deja pu servir de pivot interne au core ci-dessus.
-   UpdateReferenceSwings(highPivot,lowPivot);
+   // Seule la paire 2/2 dediee devient une reference externe, apres le
+   // traitement de tous les evenements de la bougie courante.
+   UpdateReferenceSwings(referenceHighPivot,referenceLowPivot);
    return true;
 }
 
@@ -2117,7 +2522,11 @@ void OnTick()
       if(firstClosedShift<1)
       {
          for(int i=ArraySize(g_setups)-1;i>=0;i--)
-            if(!g_setups[i].entered) RemoveSetup(i);
+         {
+            if(g_setups[i].entered) continue;
+            CountFunnelInvalidation(g_setups[i].logic.phase);
+            RemoveSetup(i);
+         }
          g_lastBarOpen=currentBar;
          Print("ICT SB : historique de rattrapage indisponible, setups en attente annules");
          return;
@@ -2246,14 +2655,65 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 //+------------------------------------------------------------------+
 double OnTester()
 {
+   long invalidTotal=g_funnel.invalidWaitInternal+
+                     g_funnel.invalidWaitTarget+
+                     g_funnel.invalidWaitMss+
+                     g_funnel.invalidWaitConfirmation+
+                     g_funnel.invalidWaitRetracement+
+                     g_funnel.invalidTriggered+
+                     g_funnel.invalidOther;
+   PrintFormat("ICT_SB_FUNNEL,setups_created=%I64d,internal_pivot=%I64d,early_target=%I64d,target=%I64d,pending_mss=%I64d,mss=%I64d,confirmation_fvg=%I64d,confirm_bars=%I64d,confirm_displacement_ok=%I64d,confirm_candidate=%I64d,confirm_candidate_ce_value=%I64d,confirm_ready=%I64d,trigger=%I64d,signal=%I64d,entry_attempt=%I64d,reject_quote=%I64d,reject_value_area=%I64d,reject_value_area_max_gap_ticks=%.2f,reject_risk=%I64d,reject_stop_level=%I64d,reject_lots=%I64d,reject_window=%I64d,broker_reject=%I64d,pending=%I64d,confirmed=%I64d,invalid_execution=%I64d,invalid_risk_calculation=%I64d,invalid_risk_budget=%I64d,invalid_risk_distance=%I64d,invalid_fill_area=%I64d,invalid_protection=%I64d,retrace_bars=%I64d,retrace_rejection_ok=%I64d,retrace_close_value=%I64d,retrace_fvg_touch=%I64d,retrace_ote_touch=%I64d,retrace_ema_touch=%I64d,retrace_zone_touch=%I64d,retrace_zone_touch_close_value=%I64d,retrace_context_invalid=%I64d,retrace_context_invalid_zone_close=%I64d,retrace_window_invalid=%I64d,retrace_origin_invalid=%I64d,retrace_bias_invalid=%I64d,invalid_total=%I64d,invalid_wait_internal=%I64d,invalid_wait_target=%I64d,invalid_wait_mss=%I64d,invalid_wait_confirmation=%I64d,invalid_wait_retracement=%I64d,invalid_triggered=%I64d,invalid_other=%I64d",
+               g_funnel.setupsCreated,g_funnel.internalPivots,
+               g_funnel.earlyTargets,g_funnel.targets,g_funnel.pendingMss,
+               g_funnel.mss,g_funnel.confirmationFvg,
+               g_funnel.confirmationBars,
+               g_funnel.confirmationDisplacementOk,
+               g_funnel.confirmationCandidateAvailable,
+               g_funnel.confirmationCandidateCeValue,
+               g_funnel.confirmationReady,
+               g_funnel.triggers,g_funnel.signals,
+               g_funnel.entryAttempts,g_funnel.entryRejectQuote,
+               g_funnel.entryRejectValueArea,
+               g_funnel.entryRejectValueAreaMaxGapTicks,
+               g_funnel.entryRejectRisk,g_funnel.entryRejectStopLevel,
+               g_funnel.entryRejectLots,g_funnel.entryRejectWindow,
+               g_funnel.entryBrokerReject,g_funnel.entryPending,
+               g_funnel.entryConfirmed,
+               g_funnel.entryInvalidExecution,
+               g_funnel.entryInvalidRiskCalculation,
+               g_funnel.entryInvalidRiskBudget,
+               g_funnel.entryInvalidRiskDistance,
+               g_funnel.entryInvalidFillArea,
+               g_funnel.entryInvalidProtection,
+               g_funnel.retracementBars,g_funnel.retracementRejectionOk,
+               g_funnel.retracementCloseValue,g_funnel.retracementFvgTouch,
+               g_funnel.retracementOteTouch,g_funnel.retracementEmaTouch,
+               g_funnel.retracementZoneTouch,
+               g_funnel.retracementZoneTouchCloseValue,
+               g_funnel.retracementContextInvalid,
+               g_funnel.retracementContextInvalidZoneClose,
+               g_funnel.retracementWindowInvalid,
+               g_funnel.retracementOriginInvalid,
+               g_funnel.retracementBiasInvalid,invalidTotal,
+               g_funnel.invalidWaitInternal,g_funnel.invalidWaitTarget,
+               g_funnel.invalidWaitMss,g_funnel.invalidWaitConfirmation,
+               g_funnel.invalidWaitRetracement,g_funnel.invalidTriggered,
+               g_funnel.invalidOther);
    double profit = TesterStatistics(STAT_PROFIT);
    double pf     = TesterStatistics(STAT_PROFIT_FACTOR);
    double ddpct  = TesterStatistics(STAT_EQUITYDD_PERCENT);
    double trades = TesterStatistics(STAT_TRADES);
    double sharpe = TesterStatistics(STAT_SHARPE_RATIO);
    double payoff = TesterStatistics(STAT_EXPECTED_PAYOFF);
-   string fn=StringFormat("SBopt_v2_%s_O%dF%dE%dW%d_B%dG%d_t%.0f_f%.0f_r%.0f_s%d_d%d_p%.0f.csv",
-                          _Symbol,(int)InpUseOTE,(int)InpUseFVG,
+   string fn=StringFormat("SBopt_v2_%s_P%d_EP%d_MBT%d_TBI%d_DR%d_FVC%d_ET%d_O%dF%dE%dW%d_B%dG%d_t%.0f_f%.0f_r%.0f_s%d_d%d_p%.0f.csv",
+                          _Symbol,InpInternalPivotStrength,
+                          InpExternalPivotStrength,
+                          (int)InpAllowMssBeforeTarget,
+                          (int)InpAllowTargetBeforeInternalPivot,
+                          (int)InpRequireDirectionalRejection,
+                          InpMaxFvgCandidates,
+                          InpEntryEqToleranceTicks,
+                          (int)InpUseOTE,(int)InpUseFVG,
                           (int)InpUseEmaRetest,(int)InpUseSbWindows,
                           (int)InpBrokerTimeMode,InpBrokerGmtHours,
                           InpTp1R*10,InpFinalR*10,InpTrailR*10,
@@ -2262,7 +2722,14 @@ double OnTester()
    int file=FileOpen(fn,FILE_WRITE|FILE_CSV|FILE_COMMON|FILE_ANSI,',');
    if(file!=INVALID_HANDLE)
    {
-      FileWrite(file,_Symbol,(int)InpUseOTE,(int)InpUseFVG,
+      FileWrite(file,_Symbol,InpInternalPivotStrength,
+                InpExternalPivotStrength,
+                (int)InpAllowMssBeforeTarget,
+                (int)InpAllowTargetBeforeInternalPivot,
+                (int)InpRequireDirectionalRejection,
+                InpMaxFvgCandidates,
+                InpEntryEqToleranceTicks,
+                (int)InpUseOTE,(int)InpUseFVG,
                 (int)InpUseEmaRetest,(int)InpUseSbWindows,
                 (int)InpBrokerTimeMode,InpBrokerGmtHours,
                 DoubleToString(InpTp1R,1),DoubleToString(InpFinalR,1),

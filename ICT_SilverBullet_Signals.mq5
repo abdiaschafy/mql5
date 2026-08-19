@@ -1,9 +1,9 @@
 //+------------------------------------------------------------------+
 //|                                     ICT_SilverBullet_Signals.mq5  |
 //|   Portage MT5 de l'indicateur "ICT Silver Bullet Signals" (NT).   |
-//|   OUTIL DE SIGNAUX (aucun ordre) — moteur partage avec l'EA.      |
+//|   OUTIL DE SIGNAUX (aucun ordre) - moteur partage avec l'EA.      |
 //|   LONG : stack strict, purge/reintegration du swing low, MSS      |
-//|   interne + deplacement/FVG discount, puis retracement horaire.   |
+//|   interne 1/1 ou 2/2 + deplacement/FVG, puis retracement.         |
 //|   SHORT : sequence miroir en premium.                             |
 //|   Trace : EMA10/20 (base de la logique), triangle vert (LONG) /   |
 //|   rouge (SHORT), lignes SL/TP optionnelles, fenetres NY en TRAITS|
@@ -53,12 +53,18 @@ input group "== 2. Modeles de signal =="
 input bool   InpUseOTE       = false;
 input bool   InpUseFVG       = true;
 input bool   InpUseEmaRetest = true;
+input bool   InpRequireDirectionalRejection = true; // Rejet/couleur directionnels au trigger
 input double InpOteLow        = 0.62;
 input double InpOteHigh       = 0.79;
 input double InpOteSweet      = 0.705;
 input int    InpMinDispTicks  = 20;
 input int    InpMinFvgTicks   = 1;
+input int    InpMaxFvgCandidates = 1; // Candidats FVG conserves (1 a 4)
 input int    InpSetupExpiry   = 30;
+input int    InpInternalPivotStrength = 1; // Pivot interne strict 1/1 ou 2/2
+input int    InpExternalPivotStrength = 2; // Pivot de reference strict 1/1 ou 2/2
+input bool   InpAllowMssBeforeTarget = false; // false=strict, true=MSS anticipe memorise
+input bool   InpAllowTargetBeforeInternalPivot = false; // false=cible apres pivot obligatoire
 input bool   InpRequireMSS    = true; // Compatibilite : MSS toujours obligatoire
 input int    InpMssLookback   = 15;   // Compatibilite des anciens presets
 input int    InpMaxPositions  = 3;    // Cap des setups candidats de l'indicateur
@@ -124,10 +130,25 @@ int   g_dashX=-1, g_dashY=8;
 bool  g_collapsed=false, g_hidden=false;
 bool  g_dragging=false;
 int   g_grabDX=0, g_grabDY=0;
-const int ROWH=19, COLW1=82, COLW2=178;
+const int ROWH=19, COLW1=82, COLW2=248;
 const int NROWS=5;   // Biais, Tendance, Fenetre, Signal, Bougie
 
 const string PFX="SBS_";
+
+string MssOrderModeName()
+{
+   return InpAllowMssBeforeTarget ? "FLEXIBLE" : "STRICT";
+}
+
+string TargetPivotOrderModeName()
+{
+   return InpAllowTargetBeforeInternalPivot ? "FLEXIBLE" : "STRICT";
+}
+
+string DirectionalRejectionModeName()
+{
+   return InpRequireDirectionalRejection ? "STRICT" : "FLEXIBLE";
+}
 
 //+------------------------------------------------------------------+
 int OnInit()
@@ -150,6 +171,9 @@ int OnInit()
       MathAbs(InpOteHigh-0.79)>1e-9 ||
       InpOteSweet<InpOteLow || InpOteSweet>InpOteHigh ||
       InpMinDispTicks<0 || InpMinFvgTicks<=0 || InpSetupExpiry<=0 ||
+      InpMaxFvgCandidates<1 || InpMaxFvgCandidates>4 ||
+      InpInternalPivotStrength<1 || InpInternalPivotStrength>2 ||
+      InpExternalPivotStrength<1 || InpExternalPivotStrength>2 ||
       InpMssLookback<=0 || InpMaxPositions<=0 ||
       InpSlBufferTicks<0 || InpTp1R<=0 || InpFinalR<=InpTp1R ||
       InpMaxBarsBack<InpEmaSlow+10 ||
@@ -202,16 +226,31 @@ int OnInit()
                : 0;
    g_coreConfig.minDisplacement=InpMinDispTicks*Tick();
    g_coreConfig.minFvgSize=InpMinFvgTicks*Tick();
+   g_coreConfig.maxFvgCandidates=InpMaxFvgCandidates;
    g_coreConfig.oteLow=InpOteLow;
    g_coreConfig.oteHigh=InpOteHigh;
    g_coreConfig.expiryBars=InpSetupExpiry;
    g_coreConfig.requireWindow=true;
+   g_coreConfig.requireDirectionalRejection=
+      InpRequireDirectionalRejection;
+   g_coreConfig.allowMssBeforeTarget=InpAllowMssBeforeTarget;
+   g_coreConfig.allowTargetBeforeInternalPivot=
+      InpAllowTargetBeforeInternalPivot;
    g_coreConfig.useFvgTrigger=InpUseFVG;
    g_coreConfig.useOteTrigger=InpUseOTE;
    g_coreConfig.useEmaTrigger=InpUseEmaRetest;
    SblResetRegistry(g_consumed);
 
-   IndicatorSetString(INDICATOR_SHORTNAME,"ICT SB Signals");
+   IndicatorSetString(INDICATOR_SHORTNAME,
+                      StringFormat("ICT SBS P%d/%d EP%d/%d MSS:%s C/P:%s DR:%s FVC:%d",
+                                   InpInternalPivotStrength,
+                                   InpInternalPivotStrength,
+                                   InpExternalPivotStrength,
+                                   InpExternalPivotStrength,
+                                   MssOrderModeName(),
+                                   TargetPivotOrderModeName(),
+                                   DirectionalRejectionModeName(),
+                                   InpMaxFvgCandidates));
    ChartSetInteger(0,CHART_EVENT_MOUSE_MOVE,true);
 
    if(InpShowDashboard)
@@ -618,7 +657,17 @@ void MkButton(string nm,string txt)
 void BuildDashboard()
 {
    MkRect(PFX+"hdr",C'30,60,160');
-   MkLabel(PFX+"title","ICT SB - SIGNAUX",clrWhite,9,true);
+   MkLabel(PFX+"title",
+           StringFormat("SB P%d/%d EP%d/%d MSS:%s C/P:%s DR:%s FVC:%d",
+                        InpInternalPivotStrength,
+                        InpInternalPivotStrength,
+                        InpExternalPivotStrength,
+                        InpExternalPivotStrength,
+                        MssOrderModeName(),
+                        TargetPivotOrderModeName(),
+                        DirectionalRejectionModeName(),
+                        InpMaxFvgCandidates),
+           clrWhite,8,true);
    MkButton(PFX+"btnMin","-");
    MkButton(PFX+"btnClose","x");
    for(int i=1;i<=NROWS;i++)
@@ -878,8 +927,8 @@ int OnCalculate(const int rates_total,
       int alignedDir=SblAlignedBias(trendBias,biasHtf,biasC1,biasC2);
       g_alignedDir=alignedDir;
 
-      // Une unique detection 2/2 du core alimente a la fois les swings de
-      // reference et le pivot interne attendu par chaque setup.
+      // Les pivots externes et internes partagent uniquement l'historique brut.
+      // Leurs forces et leurs mappings causaux restent independants ci-dessous.
       SblBar pivotBars[5];
       for(int offset=0;offset<5;offset++)
       {
@@ -903,14 +952,62 @@ int OnCalculate(const int rates_total,
             sourceMinute);
       }
 
-      SblPivot longPivot,shortPivot;
-      SblDetectInternalPivot(SBL_LONG,pivotBars[0],pivotBars[1],
-                             pivotBars[2],pivotBars[3],pivotBars[4],
-                             longPivot);
-      SblDetectInternalPivot(SBL_SHORT,pivotBars[0],pivotBars[1],
-                             pivotBars[2],pivotBars[3],pivotBars[4],
-                             shortPivot);
-      SblRejectAmbiguousDualPivot(longPivot,shortPivot);
+      // Les references externes suivent leur propre buffer causal. En 1/1,
+      // b-1 est le candidat et b le confirme ; en 2/2, b-2 reste le candidat.
+      SblBar externalTwoBefore,externalOneBefore,externalCandidate,
+             externalOneAfter,externalTwoAfter;
+      externalTwoBefore=pivotBars[0];
+      externalOneBefore=pivotBars[1];
+      externalCandidate=pivotBars[2];
+      externalOneAfter=pivotBars[3];
+      externalTwoAfter=pivotBars[4];
+      if(InpExternalPivotStrength==1)
+      {
+         externalTwoBefore=pivotBars[1]; // Ignore par le Core en mode 1/1.
+         externalOneBefore=pivotBars[2];
+         externalCandidate=pivotBars[3];
+         externalOneAfter=pivotBars[4];
+         externalTwoAfter=pivotBars[4];  // Ignore par le Core en mode 1/1.
+      }
+
+      SblPivot externalHighPivot,externalLowPivot;
+      SblDetectInternalPivot(SBL_LONG,InpExternalPivotStrength,
+                             externalTwoBefore,externalOneBefore,
+                             externalCandidate,externalOneAfter,
+                             externalTwoAfter,externalHighPivot);
+      SblDetectInternalPivot(SBL_SHORT,InpExternalPivotStrength,
+                             externalTwoBefore,externalOneBefore,
+                             externalCandidate,externalOneAfter,
+                             externalTwoAfter,externalLowPivot);
+      SblRejectAmbiguousDualPivot(externalHighPivot,externalLowPivot);
+
+      // Le buffer interne est entierement independant du reglage externe.
+      SblBar internalTwoBefore,internalOneBefore,internalCandidate,
+             internalOneAfter,internalTwoAfter;
+      internalTwoBefore=pivotBars[0];
+      internalOneBefore=pivotBars[1];
+      internalCandidate=pivotBars[2];
+      internalOneAfter=pivotBars[3];
+      internalTwoAfter=pivotBars[4];
+      if(InpInternalPivotStrength==1)
+      {
+         internalTwoBefore=pivotBars[1]; // Ignore par le Core en mode 1/1.
+         internalOneBefore=pivotBars[2];
+         internalCandidate=pivotBars[3];
+         internalOneAfter=pivotBars[4];
+         internalTwoAfter=pivotBars[4];  // Ignore par le Core en mode 1/1.
+      }
+
+      SblPivot internalHighPivot,internalLowPivot;
+      SblDetectInternalPivot(SBL_LONG,InpInternalPivotStrength,
+                             internalTwoBefore,internalOneBefore,
+                             internalCandidate,internalOneAfter,
+                             internalTwoAfter,internalHighPivot);
+      SblDetectInternalPivot(SBL_SHORT,InpInternalPivotStrength,
+                             internalTwoBefore,internalOneBefore,
+                             internalCandidate,internalOneAfter,
+                             internalTwoAfter,internalLowPivot);
+      SblRejectAmbiguousDualPivot(internalHighPivot,internalLowPivot);
 
       SblBar bar;
       bar=pivotBars[4];
@@ -927,9 +1024,9 @@ int OnCalculate(const int rates_total,
       {
          SblPivot setupPivot;
          if(g_setups[i].direction==SBL_LONG)
-            setupPivot=longPivot;
+            setupPivot=internalHighPivot;
          else
-            setupPivot=shortPivot;
+            setupPivot=internalLowPivot;
          SblDecision decision;
          SblAdvanceSetup(g_setups[i],bar,alignedDir,setupPivot,newFvg,inWindow,
                          g_coreConfig,decision);
@@ -1010,18 +1107,20 @@ int OnCalculate(const int rates_total,
       // Un pivot externe confirme a cette cloture n'etait pas connaissable
       // pendant la bougie. Il devient donc une reference seulement pour la
       // suivante ; le core a deja pu l'utiliser comme pivot interne ci-dessus.
-      if(longPivot.present && longPivot.pivotTime>(long)g_lastSwingHiTime)
+      if(externalHighPivot.present &&
+         externalHighPivot.pivotTime>(long)g_lastSwingHiTime)
       {
-         g_lastSwingHi=longPivot.price;
-         g_lastSwingHiTime=(datetime)longPivot.pivotTime;
-         g_lastSwingHiConfirmBar=longPivot.confirmedBar;
+         g_lastSwingHi=externalHighPivot.price;
+         g_lastSwingHiTime=(datetime)externalHighPivot.pivotTime;
+         g_lastSwingHiConfirmBar=externalHighPivot.confirmedBar;
          g_haveHi=true;
       }
-      if(shortPivot.present && shortPivot.pivotTime>(long)g_lastSwingLoTime)
+      if(externalLowPivot.present &&
+         externalLowPivot.pivotTime>(long)g_lastSwingLoTime)
       {
-         g_lastSwingLo=shortPivot.price;
-         g_lastSwingLoTime=(datetime)shortPivot.pivotTime;
-         g_lastSwingLoConfirmBar=shortPivot.confirmedBar;
+         g_lastSwingLo=externalLowPivot.price;
+         g_lastSwingLoTime=(datetime)externalLowPivot.pivotTime;
+         g_lastSwingLoConfirmBar=externalLowPivot.confirmedBar;
          g_haveLo=true;
       }
    }

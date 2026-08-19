@@ -11,7 +11,7 @@
 //|  - Zone OTE par cassure : 0.666->0.79, sweet 0.705, repere 0.62,  |
 //|    upgrade A+ si biais HTF aligne                                 |
 //|  - Killzones Open/Close (5, heure NY, DST auto) + Asian Box       |
-//|  - Macros ICT (bandes fines pleine hauteur — adaptation MT5)      |
+//|  - Macros ICT (bandes fines pleine hauteur - adaptation MT5)      |
 //|  - NDOG (gap cloture veille -> ouverture jour, N jours, mediane)  |
 //|  - Liquidites : BSL/SSL 2 echelles (majeurs pleins / internes     |
 //|    tirets), EQH/EQL renforces, purge = trait fin gris au sweep    |
@@ -542,7 +542,7 @@ string CountdownTxt()
    if(rem >= 3600) return StringFormat("%02d:%02d:%02d", (int)(rem / 3600), (int)((rem % 3600) / 60), (int)(rem % 60));
    return StringFormat("%02d:%02d", (int)(rem / 60), (int)(rem % 60));
 }
-// bouton du dashboard (—/✕), coin haut-droit, style chrome
+// bouton du dashboard (-/✕), coin haut-droit, style chrome
 void DashButton(string name, int x, int y, int w, int h, string txt)
 {
    string n = PFX + name;
@@ -578,7 +578,7 @@ void UpdateDashboard()
    int w1 = 96, w2 = 86, h = 18, x2 = dashX, x1 = x2 + w2, yy = dashY;   // position deplacable
    DashCell("t0", x2, yy, w1 + w2, h, "ICT CONFLUENCE", cHdr, clrWhite);
    ObjectSetInteger(0, PFX "dashtx_t0", OBJPROP_XDISTANCE, x2 + 56);   // titre ~centre (place aux boutons)
-   // boutons — / ✕ dans le coin du bandeau : reduire / fermer en un clic
+   // boutons - / ✕ dans le coin du bandeau : reduire / fermer en un clic
    DashButton("btnMin", x2 + 22, yy + 1, 18, 16, "-");
    DashButton("btnX",   x2 + 2,  yy + 1, 18, 16, "x");
    yy += h;
@@ -646,7 +646,7 @@ void OnTimer()
    ChartRedraw(0);
 }
 
-// clics sur les boutons — / ✕ du dashboard + DRAG par le bandeau-titre
+// clics sur les boutons - / ✕ du dashboard + DRAG par le bandeau-titre
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
 {
    if(id == CHARTEVENT_MOUSE_MOVE)
